@@ -11,9 +11,6 @@ pipeline {
             cleanWs()
         }
     }
-    node {
-        checkout scm
-    }
     stages {
         stage('Test') {
             sh 'mvn -B --no-transfer-progress verify'
