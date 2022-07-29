@@ -14,7 +14,7 @@ pipeline {
     stages {
         stage('Build') {
             steps {
-                sh 'mvn -B clean package -DskipTests -Ddependency-check.skip=true -Ddocker=false'
+                sh 'mvn -B -q clean package -DskipTests -Ddependency-check.skip=true -Ddocker=false'
             }
         }
     }
