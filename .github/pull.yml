@@ -1,0 +1,12 @@
+version: "1"
+rules:
+  - base: develop
+    upstream: eXist-db:develop
+    mergeMethod: rebase
+    assignees:
+      - mcmeeking
+  - base: develop-4.x.x
+    upstream: eXist-db:develop-4.x.x
+    mergeMethod: rebase
+    assignees:
+      - mcmeeking
