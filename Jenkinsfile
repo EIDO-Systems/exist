@@ -16,6 +16,11 @@ pipeline {
             steps {
                 sh 'mvn -B --no-transfer-progress verify'
             }
+            post {
+                always {
+                    junit 'target/surefire-reports/**/*.xml'
+                }
+            }
         }
         stage('Build') {
             steps {
