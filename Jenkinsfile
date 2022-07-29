@@ -12,16 +12,6 @@ pipeline {
         }
     }
     stages {
-        stage('Test') {
-            steps {
-                sh 'mvn -B --no-transfer-progress verify'
-            }
-            post {
-                always {
-                    junit 'target/surefire-reports/**/*.xml'
-                }
-            }
-        }
         stage('Build') {
             steps {
                 sh 'mvn -B clean package -DskipTests -Ddependency-check.skip=true -Ddocker=false'
