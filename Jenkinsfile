@@ -13,10 +13,14 @@ pipeline {
     }
     stages {
         stage('Test') {
-            sh 'mvn -B --no-transfer-progress verify'
+            steps {
+                sh 'mvn -B --no-transfer-progress verify'
+            }
         }
         stage('Build') {
-            sh 'mvn -B clean package -DskipTests -Ddependency-check.skip=true -Ddocker=false'
+            steps {
+                sh 'mvn -B clean package -DskipTests -Ddependency-check.skip=true -Ddocker=false'
+            }
         }
     }
 }
