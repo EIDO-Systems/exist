@@ -7,7 +7,7 @@ pipeline {
         ansiColor('xterm')
     }
     post {
-        unsuccessful {
+        always {
             cleanWs()
         }
     }
