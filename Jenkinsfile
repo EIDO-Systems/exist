@@ -25,10 +25,7 @@ pipeline {
         }
         stage('Deploy') {
             when {
-                allOf {
-                    expression { currentBuild.result == 'SUCCESS' }
-                    expression { env.BRANCH_NAME == 'develop-4.x.x' }
-                }
+                expression { env.BRANCH_NAME == 'develop-4.x.x' }
             }
             steps {
                 sh """
