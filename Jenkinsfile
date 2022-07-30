@@ -3,7 +3,7 @@ pipeline {
     options {
         timestamps()
         disableConcurrentBuilds()
-        buildDiscarder(logRotator(numToKeepStr: '10'))
+        buildDiscarder(logRotator(numToKeepStr: '3'))
         ansiColor('xterm')
     }
     post {
@@ -35,7 +35,6 @@ pipeline {
                             esac
                         done
                         aws s3 sync s3-uploads s3://eido-exist-builds/"""
-                    }
                 }
             }
         }
