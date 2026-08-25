@@ -57,7 +57,6 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -82,6 +81,9 @@ public class ExistRepository extends Observable implements BrokerPoolService {
     private static final String EXPATH_REPO_DIR_NAME = "expathrepo";
     private static final String LEGACY_DEFAULT_EXPATH_REPO_DIR = "webapp/WEB-INF/" + EXPATH_REPO_DIR_NAME;
 
+    /** EXPath Packaging namespace used in {@code expath-pkg.xml}. */
+    private static final String PKG_NAMESPACE = "http://expath.org/ns/pkg";
+
     /** The wrapped EXPath repository. */
     private Path expathDir;
     private Repository myParent;
@@ -89,7 +91,7 @@ public class ExistRepository extends Observable implements BrokerPoolService {
     @Override
     public void configure(final Configuration configuration) throws BrokerPoolServiceException {
         final Path dataDir = Optional.ofNullable((Path) configuration.getProperty(BrokerPool.PROPERTY_DATA_DIR))
-                .orElse(Paths.get(NativeBroker.DEFAULT_DATA_DIR));
+                .orElse(Path.of(NativeBroker.DEFAULT_DATA_DIR));
         this.expathDir = dataDir.resolve(EXPATH_REPO_DIR_NAME);
     }
 
@@ -207,10 +209,7 @@ public class ExistRepository extends Observable implements BrokerPoolService {
                 return clazz.newInstance();
             }
         } catch (final Throwable e) {
-            if (e instanceof InterruptedException) {
-                // NOTE: must set interrupted flag
-                Thread.currentThread().interrupt();
-            }
+            restoreInterruptIfInterruptedException(e);
 
             final String msg = "Unable to instantiate module from EXPath" +
                     "repository: " + clazz.getName();
@@ -219,6 +218,13 @@ public class ExistRepository extends Observable implements BrokerPoolService {
             LOG.error(e.getMessage(), e);
 
             throw new XPathException((Expression) null, msg, e);
+        }
+    }
+
+    private static void restoreInterruptIfInterruptedException(final Throwable t) {
+        if (t instanceof InterruptedException) {
+            // NOTE: must set interrupted flag
+            Thread.currentThread().interrupt();
         }
     }
 
@@ -256,7 +262,7 @@ public class ExistRepository extends Observable implements BrokerPoolService {
                 src = pkg.resolve(namespace, URISpace.XQUERY);
                 if (src != null) {
                     sysid = src.getSystemId();
-                    return Paths.get(new URI(sysid));
+                    return Path.of(new URI(sysid));
                 }
             } catch (final URISyntaxException ex) {
                 throw new XPathException((Expression) null, ErrorCodes.XQST0046, "Error parsing the URI of the query library: " + sysid, ex);
@@ -297,15 +303,15 @@ public class ExistRepository extends Observable implements BrokerPoolService {
         // 1. attempt to locate it within a library
         XmldbURI xqueryDbPath = XmldbURI.create("xmldb:exist:///db/system/repo/" + relXQueryPath);
         @Nullable Document doc = broker.getXMLResource(xqueryDbPath);
-        if (doc != null && doc instanceof BinaryDocument) {
-            return new DBSource(broker.getBrokerPool(), (BinaryDocument) doc, false);
+        if (doc != null && doc instanceof BinaryDocument document) {
+            return new DBSource(broker.getBrokerPool(), document, false);
         }
 
         // 2. attempt to locate it within an app
         xqueryDbPath = XmldbURI.create("xmldb:exist:///db/apps/" + relXQueryPath);
         doc = broker.getXMLResource(xqueryDbPath);
-        if (doc != null && doc instanceof BinaryDocument) {
-            return new DBSource(broker.getBrokerPool(), (BinaryDocument) doc, false);
+        if (doc != null && doc instanceof BinaryDocument document) {
+            return new DBSource(broker.getBrokerPool(), document, false);
         }
 
         return null;
@@ -334,9 +340,62 @@ public class ExistRepository extends Observable implements BrokerPoolService {
         return modules;
     }
 
+    public List<URI> getXQueryModules() {
+        final List<URI> modules = new ArrayList<>();
+        for (final Packages pp : myParent.listPackages()) {
+            final Package pkg = pp.latest();
+            // 1. XQuery modules declared in exist.xml
+            final ExistPkgInfo info = (ExistPkgInfo) pkg.getInfo("exist");
+            if (info != null) {
+                modules.addAll(info.getXQueryModules());
+            }
+            // 2. XQuery modules declared in expath-pkg.xml (standard EXPath components)
+            modules.addAll(getExpathPkgXQueryModules(pkg));
+        }
+        return modules;
+    }
+
+    /**
+     * Parse {@code expath-pkg.xml} for the given package and return the XQuery
+     * namespace URIs it declares. Returns an empty list if the descriptor is
+     * absent or cannot be parsed.
+     */
+    private List<URI> getExpathPkgXQueryModules(final Package pkg) {
+        final FileSystemResolver resolver = (FileSystemResolver) pkg.getResolver();
+        final Path pkgDescriptor = resolver.resolveResourceAsFile("expath-pkg.xml");
+        if (pkgDescriptor == null || !Files.exists(pkgDescriptor)) {
+            return List.of();
+        }
+        final List<URI> modules = new ArrayList<>();
+        try {
+            final javax.xml.parsers.DocumentBuilderFactory dbf = javax.xml.parsers.DocumentBuilderFactory.newInstance();
+            dbf.setNamespaceAware(true);
+            final Document doc = dbf.newDocumentBuilder().parse(pkgDescriptor.toFile());
+            final org.w3c.dom.NodeList xqueryElements = doc.getElementsByTagNameNS(PKG_NAMESPACE, "xquery");
+            for (int i = 0; i < xqueryElements.getLength(); i++) {
+                final org.w3c.dom.Element xquery = (org.w3c.dom.Element) xqueryElements.item(i);
+                final org.w3c.dom.NodeList nsElements = xquery.getElementsByTagNameNS(PKG_NAMESPACE, "namespace");
+                for (int j = 0; j < nsElements.getLength(); j++) {
+                    final String ns = nsElements.item(j).getTextContent().trim();
+                    if (ns.isEmpty()) {
+                        continue;
+                    }
+                    try {
+                        modules.add(new URI(ns));
+                    } catch (final URISyntaxException e) {
+                        LOG.debug("Invalid namespace URI in expath-pkg.xml: {}", ns);
+                    }
+                }
+            }
+        } catch (final Exception e) {
+            LOG.debug("Error parsing expath-pkg.xml for package {}: {}", pkg.getName(), e.getMessage());
+        }
+        return modules;
+    }
+
     public static Path getRepositoryDir(final Configuration config) throws IOException {
         final Path dataDir = Optional.ofNullable((Path) config.getProperty(BrokerPool.PROPERTY_DATA_DIR))
-                        .orElse(Paths.get(NativeBroker.DEFAULT_DATA_DIR));
+                        .orElse(Path.of(NativeBroker.DEFAULT_DATA_DIR));
         final Path expathDir = dataDir.resolve(EXPATH_REPO_DIR_NAME);
 
         if(!Files.exists(expathDir)) {
@@ -353,7 +412,7 @@ public class ExistRepository extends Observable implements BrokerPoolService {
             } else {
                 return h.resolve(LEGACY_DEFAULT_EXPATH_REPO_DIR);
             }
-        }).orElse(Paths.get(System.getProperty("java.io.tmpdir")).resolve(EXPATH_REPO_DIR_NAME));
+        }).orElse(Path.of(System.getProperty("java.io.tmpdir")).resolve(EXPATH_REPO_DIR_NAME));
 
         if (Files.isReadable(repo_dir)) {
             LOG.info("Found old expathrepo directory. Moving to new default location: {}", newRepo.toAbsolutePath().toString());

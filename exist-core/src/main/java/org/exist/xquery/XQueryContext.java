@@ -30,7 +30,6 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.charset.Charset;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.ThreadPoolExecutor;
@@ -92,6 +91,7 @@ import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.parser.*;
 import org.exist.xquery.pragmas.*;
 import org.exist.xquery.update.Modification;
+import org.exist.xquery.util.DocUtils;
 import org.exist.xquery.util.SerializerUtils;
 import org.exist.xquery.value.*;
 import org.jgrapht.Graph;
@@ -187,6 +187,17 @@ public class XQueryContext implements BinaryValueManager, Context {
 
     // The last element in the linked list of local in-scope variables
     private LocalVariable lastVar = null;
+
+    /**
+     * O(1) lookup table from QName to the most-recently-declared LocalVariable
+     * with that name. Maintained alongside the {@link #lastVar} linked list:
+     * declareVariableBinding adds, popLocalVariables restores the prevSameName
+     * chain. Visibility is enforced in resolveLocalVariable by comparing
+     * {@link LocalVariable#markedUnder} to {@code contextStack.peek()}.
+     */
+    // Shared by reference with copies of this context (see copyFields,
+    // updateContext) just like {@link #contextStack} and {@link #lastVar}.
+    private Map<QName, LocalVariable> localVariableLookup = new HashMap<>();
 
     private Deque<LocalVariable> contextStack = new ArrayDeque<>();
 
@@ -389,6 +400,12 @@ public class XQueryContext implements BinaryValueManager, Context {
 
     private Source source = null;
 
+    /**
+     * How much of a failed execution may be disclosed to the caller. Recomputed from the current
+     * subject on every execution and never cached with the compiled query, see {@link ErrorDisclosure}.
+     */
+    private ErrorDisclosure errorDisclosure = ErrorDisclosure.FULL;
+
     private DebuggeeJoint debuggeeJoint = null;
 
     private int xqueryVersion = 31;
@@ -420,6 +437,9 @@ public class XQueryContext implements BinaryValueManager, Context {
      * HTTP context.
      */
     private @Nullable HttpContext httpContext = null;
+    /**
+     * Sentinel QName for the default (unnamed) decimal format per XQuery 3.1 §4.10.
+     */
     private static final QName UNNAMED_DECIMAL_FORMAT = new QName("__UNNAMED__", Function.BUILTIN_FUNCTION_NS);
 
     private final Map<QName, DecimalFormat> staticDecimalFormats = hashMap(Tuple(UNNAMED_DECIMAL_FORMAT, DecimalFormat.UNNAMED));
@@ -507,8 +527,15 @@ public class XQueryContext implements BinaryValueManager, Context {
             try {
                 declareNamespace(prefix, copyFrom.staticNamespaces.get(prefix));
             } catch (final XPathException ex) {
-                ex.printStackTrace();
+                LOG.warn("Failed to copy namespace declaration for prefix '{}'", prefix, ex);
             }
+        }
+
+        // Copy in-scope namespaces registered via declareInScopeNamespace. Otherwise QName.parse()
+        // will raise error XPST0081 when resolving path-step names in any of those.
+        for (final Map.Entry<String, String> entry : copyFrom.inScopeNamespaces.entrySet()) {
+            inScopeNamespaces.put(entry.getKey(), entry.getValue());
+            inScopePrefixes.put(entry.getValue(), entry.getKey());
         }
     }
 
@@ -603,9 +630,7 @@ public class XQueryContext implements BinaryValueManager, Context {
                 } else {
                     // NOTE(AR) set the location of the module to import relative to this module's load path
                     // - so that transient imports of the imported module will resolve correctly!
-                    final Path collectionPath = Paths.get(XmldbURI.create(moduleLoadPath).getCollectionPath());
-                    final Path sourcePath = Paths.get(sourceCollection);
-                    location = collectionPath.relativize(sourcePath).toString();
+                    location = relativizeOrFallback(moduleLoadPath, sourceCollection);
                 }
             }
 
@@ -614,6 +639,34 @@ public class XQueryContext implements BinaryValueManager, Context {
 
         } catch (final PermissionDeniedException | IllegalArgumentException e) {
             throw new XPathException(e.getMessage(), e);
+        }
+    }
+
+    /**
+     * Compute the location of an imported module relative to the importing module's load path,
+     * falling back to the absolute source collection when the load path is not a relativizable
+     * collection URI.
+     *
+     * Clients may send a synthetic value as the module load path for unsaved in-memory queries
+     * (e.g. eXide sends {@code "xmldb:exist://__new__1"} for new untitled buffers). Such values
+     * are not real collection URIs and cause {@link Path#relativize(Path)} to throw
+     * {@link IllegalArgumentException}. In that case we fall back to the absolute source
+     * collection so the import still resolves, matching the behaviour of the {@code "."}
+     * load-path case.
+     *
+     * @param moduleLoadPath the load path of the importing module
+     * @param sourceCollection the collection path of the module being imported
+     * @return the relative location, or the absolute source collection if relativization fails
+     */
+    static String relativizeOrFallback(final String moduleLoadPath, final String sourceCollection) {
+        try {
+            final Path collectionPath = Path.of(XmldbURI.create(moduleLoadPath).getCollectionPath());
+            final Path sourcePath = Path.of(sourceCollection);
+            return collectionPath.relativize(sourcePath).toString();
+        } catch (final IllegalArgumentException e) {
+            LOG.debug("Module load path '{}' is not relativizable against source collection '{}'; using absolute collection path: {}",
+                    moduleLoadPath, sourceCollection, e.getMessage());
+            return sourceCollection;
         }
     }
 
@@ -629,8 +682,8 @@ public class XQueryContext implements BinaryValueManager, Context {
         // prepare the variables of the internal modules (which were previously reset)
         for (final Module[] modules : allModules.values()) {
             for (final Module module : modules) {
-                if (module instanceof InternalModule) {
-                    ((InternalModule) module).prepare(this);
+                if (module instanceof InternalModule internalModule) {
+                    internalModule.prepare(this);
                 }
             }
         }
@@ -658,6 +711,7 @@ public class XQueryContext implements BinaryValueManager, Context {
         this.watchdog = from.watchdog;
         this.lastVar = from.lastVar;
         this.contextStack = from.contextStack;
+        this.localVariableLookup = from.localVariableLookup;
         this.inScopeNamespaces = from.inScopeNamespaces;
         this.inScopePrefixes = from.inScopePrefixes;
         this.inheritedInScopeNamespaces = from.inheritedInScopeNamespaces;
@@ -728,6 +782,7 @@ public class XQueryContext implements BinaryValueManager, Context {
         ctx.lastVar = this.lastVar;
         ctx.variableStackSize = getCurrentStackSize();
         ctx.contextStack = this.contextStack;
+        ctx.localVariableLookup = this.localVariableLookup;
         ctx.staticNamespaces = new HashMap<>(this.staticNamespaces);
         ctx.staticPrefixes = new HashMap<>(this.staticPrefixes);
 
@@ -875,7 +930,9 @@ public class XQueryContext implements BinaryValueManager, Context {
         }
         //Forbids rebinding the *same* prefix in a *different* namespace in this *same* context
         if (!nonNullUri.equals(prevURI)) {
-            throw new XPathException(rootExpression, ErrorCodes.XQST0033,
+            // XQST0066 for default element namespace redeclaration, XQST0033 for other prefixes
+            final ErrorCodes.ErrorCode errorCode = nonNullPrefix.isEmpty() ? ErrorCodes.XQST0066 : ErrorCodes.XQST0033;
+            throw new XPathException(rootExpression, errorCode,
                     "Cannot bind prefix '" + prefix + "' to '" + nonNullUri + "' it is already bound to '" + prevURI + "'");
         }
 
@@ -969,6 +1026,18 @@ public class XQueryContext implements BinaryValueManager, Context {
         return inheritedInScopeNamespaces == null ? null : inheritedInScopeNamespaces.get(prefix);
     }
 
+    public Map<String, String> getAllInheritedNamespaces() {
+        return inheritedInScopeNamespaces;
+    }
+
+    public Map<String, String> getInScopeNamespaces() {
+        return inScopeNamespaces;
+    }
+
+    public MemTreeBuilder getCurrentDocumentBuilder() {
+        return documentBuilder;
+    }
+
     @Override
     public String getInheritedPrefix(final String uri) {
         return inheritedInScopePrefixes == null ? null : inheritedInScopePrefixes.get(uri);
@@ -1018,6 +1087,16 @@ public class XQueryContext implements BinaryValueManager, Context {
 
     @Override
     public void setDefaultFunctionNamespace(final String uri) throws XPathException {
+        // XQST0070: A namespace URI bound to the predefined xmlns or to xml (with a
+        // non-xml binding) is reserved and cannot appear in a default namespace declaration.
+        if (Namespaces.XMLNS_NS.equals(uri)) {
+            throw new XPathException(rootExpression, ErrorCodes.XQST0070,
+                    "The namespace URI '" + Namespaces.XMLNS_NS + "' cannot be used as the default function namespace");
+        }
+        if (XML_NS.equals(uri)) {
+            throw new XPathException(rootExpression, ErrorCodes.XQST0070,
+                    "The namespace URI '" + XML_NS + "' cannot be bound to a prefix other than 'xml'");
+        }
         //Not sure for the 2nd clause : eXist-db forces the function NS as default.
         if (defaultFunctionNamespace != null
                 && !defaultFunctionNamespace.equals(Function.BUILTIN_FUNCTION_NS)
@@ -1049,6 +1128,16 @@ public class XQueryContext implements BinaryValueManager, Context {
 
     @Override
     public void setDefaultElementNamespace(final String uri, @Nullable final String schema) throws XPathException {
+        // XQST0070: A namespace URI bound to the predefined xmlns or to xml (with a
+        // non-xml binding) is reserved and cannot appear in a default namespace declaration.
+        if (Namespaces.XMLNS_NS.equals(uri)) {
+            throw new XPathException(rootExpression, ErrorCodes.XQST0070,
+                    "The namespace URI '" + Namespaces.XMLNS_NS + "' cannot be used as the default element namespace");
+        }
+        if (XML_NS.equals(uri)) {
+            throw new XPathException(rootExpression, ErrorCodes.XQST0070,
+                    "The namespace URI '" + XML_NS + "' cannot be bound to a prefix other than 'xml'");
+        }
         // eXist forces the empty element NS as default.
         if (!defaultElementNamespace.equals(AnyURIValue.EMPTY_URI)) {
             throw new XPathException(rootExpression, ErrorCodes.XQST0066,
@@ -1301,6 +1390,31 @@ public class XQueryContext implements BinaryValueManager, Context {
     }
 
     /**
+     * Gets a text resource from the "Available text resources" of the
+     * dynamic context, matching by URI only. This is used when no encoding
+     * is specified, allowing the resource to be found regardless of what
+     * charset it was registered with.
+     *
+     * @param uri the URI of the resource to retrieve
+     * @return a reader to read the resource content from, or null if not found
+     * @throws XPathException in case of a dynamic error
+     */
+    public @Nullable Reader getDynamicallyAvailableTextResourceByUri(final String uri)
+            throws XPathException {
+        if (dynamicTextResources == null) {
+            return null;
+        }
+
+        for (final Map.Entry<Tuple2<String, Charset>, QuadFunctionE<DBBroker, Txn, String, Charset, Reader, XPathException>> entry : dynamicTextResources.entrySet()) {
+            if (entry.getKey()._1.equals(uri)) {
+                final Charset registeredCharset = entry.getKey()._2;
+                return entry.getValue().apply(getBroker(), getBroker().getCurrentTransaction(), uri, registeredCharset);
+            }
+        }
+        return null;
+    }
+
+    /**
      * Gets a collection from the "Available collections" of the
      * dynamic context.
      *
@@ -1426,6 +1540,7 @@ public class XQueryContext implements BinaryValueManager, Context {
 
         if (!isShared) {
             lastVar = null;
+            localVariableLookup.clear();
         }
 
         // clear inline functions using closures
@@ -1788,8 +1903,8 @@ public class XQueryContext implements BinaryValueManager, Context {
             modules.compute(module.getNamespaceURI(), addToMapValueArray(module));
             allModules.compute(module.getNamespaceURI(), addToMapValueArray(module));
 
-            if (module instanceof InternalModule) {
-                ((InternalModule) module).prepare(this);
+            if (module instanceof InternalModule internalModule) {
+                internalModule.prepare(this);
             }
             return module;
         } catch (final InstantiationException | IllegalAccessException | InvocationTargetException | XPathException e) {
@@ -1891,6 +2006,8 @@ public class XQueryContext implements BinaryValueManager, Context {
         }
         lastVar = var;
         var.setStackPosition(getCurrentStackSize());
+        var.markedUnder = contextStack.peek();
+        var.prevSameName = localVariableLookup.put(var.getQName(), var);
         return var;
     }
 
@@ -2024,16 +2141,39 @@ public class XQueryContext implements BinaryValueManager, Context {
     }
 
     protected Variable resolveLocalVariable(final QName qname) throws XPathException {
-        final LocalVariable end = contextStack.peek();
-        for (LocalVariable var = lastVar; var != null; var = var.before) {
-            if (var == end) {
-                return null;
-            }
-            if (qname.equals(var.getQName())) {
-                return var;
-            }
+        // O(1) fast path. The linked-list walk previously here is O(N) per
+        // call and O(N²) when a body of N variables is analyzed.
+        final LocalVariable var = localVariableLookup.get(qname);
+        if (var == null) {
+            return null;
         }
-        return null;
+        // Visibility: var is visible if it was declared under the current
+        // contextStack mark — the same boundary the linked-list walk used to
+        // express by stopping at {@code contextStack.peek()}.
+        if (var.markedUnder != contextStack.peek()) {
+            return null;
+        }
+        return var;
+    }
+
+    /**
+     * Returns the first (earliest-declared) local variable currently in scope, or
+     * {@code null} if there are no local variables in scope.
+     *
+     * <p>Walks backward from {@code lastVar} to find the oldest variable declared in the
+     * current scope, stopping at the context-stack boundary.  Used by
+     * {@link OrderByClause#eval} to recover the true first active variable when
+     * {@link AbstractFLWORClause#getStartVariable()} returns a stale reference
+     * (e.g. in a FLWOR with two {@code order by} clauses where the inner one is
+     * evaluated during the outer one's {@code postEval} replay).</p>
+     */
+    LocalVariable getFirstLocalVariable() {
+        final LocalVariable end = contextStack.peek();
+        LocalVariable first = null;
+        for (LocalVariable var = lastVar; var != null && var != end; var = var.before) {
+            first = var;
+        }
+        return first;
     }
 
     @Override
@@ -2460,10 +2600,27 @@ public class XQueryContext implements BinaryValueManager, Context {
     /**
      * Restore the local variable stack to the position marked by variable var.
      *
+     * <p>Walks {@link #lastVar} backward to {@code var} (or to the start when
+     * {@code var} is {@code null}), unwinding each variable's
+     * {@code prevSameName} chain into {@link #localVariableLookup} in
+     * REVERSE-of-declaration order so that names with multiple bindings in the
+     * popped scope settle on the still-visible binding, not on a popped one.
+     *
      * @param var       only clear variables after this variable, or null
      * @param resultSeq the result sequence
      */
     public void popLocalVariables(@Nullable final LocalVariable var, @Nullable final Sequence resultSeq) {
+        for (LocalVariable cursor = lastVar; cursor != null && cursor != var; cursor = cursor.before) {
+            if (localVariableLookup.get(cursor.getQName()) == cursor) {
+                if (cursor.prevSameName != null) {
+                    localVariableLookup.put(cursor.getQName(), cursor.prevSameName);
+                } else {
+                    localVariableLookup.remove(cursor.getQName());
+                }
+            }
+            cursor.prevSameName = null;
+        }
+
         if (var != null) {
             // clear all variables registered after var. they should be out of scope.
             LocalVariable outOfScope = var.after;
@@ -2648,8 +2805,8 @@ public class XQueryContext implements BinaryValueManager, Context {
         try {
             //TODO: use URIs to ensure proper resolution of relative locations
             final String contextPath;
-            if (source instanceof FileSource) {
-                final Path sourcePath = ((FileSource) source).getPath();
+            if (source instanceof FileSource fileSource) {
+                final Path sourcePath = fileSource.getPath();
                 contextPath = sourcePath.resolveSibling(moduleLoadPath).normalize().toString();
             } else {
                 contextPath = moduleLoadPath;
@@ -2832,10 +2989,13 @@ public class XQueryContext implements BinaryValueManager, Context {
     public void resolveForwardReferences() throws XPathException {
         while (!forwardReferences.isEmpty()) {
             final FunctionCall call = forwardReferences.pop();
-            final UserDefinedFunction func = call.getContext().resolveFunction(call.getQName(), call.getArgumentCount());
+            final QName qname = call.getQName();
+            final int argumentCount = call.getArgumentCount();
+            final UserDefinedFunction func = call.getContext().resolveFunction(qname, argumentCount);
 
             if (func == null) {
-                throw new XPathException(call, ErrorCodes.XPST0017, "Call to undeclared function: " + call.getQName().getStringValue());
+                throw new XPathException(call, ErrorCodes.XPST0017,
+                        Function.functionNotFoundErrorDescription(call.getContext(), qname, argumentCount));
             }
             call.resolveForwardReference(func);
         }
@@ -2900,6 +3060,10 @@ public class XQueryContext implements BinaryValueManager, Context {
      */
     public void setStaticDecimalFormat(final QName qnDecimalFormat, final DecimalFormat decimalFormat) {
         staticDecimalFormats.put(qnDecimalFormat, decimalFormat);
+    }
+
+    public void setDefaultStaticDecimalFormat(final DecimalFormat decimalFormat) {
+        staticDecimalFormats.put(UNNAMED_DECIMAL_FORMAT, decimalFormat);
     }
 
     public Map<String, Sequence> getCachedUriCollectionResults() {
@@ -3256,11 +3420,18 @@ public class XQueryContext implements BinaryValueManager, Context {
     @Override
     public void checkOptions(final Properties properties) throws XPathException {
         checkLegacyOptions(properties);
+
+        // Phase 1: Process parameter-document first (provides base settings)
+        processParameterDocument(dynamicOptions, properties);
+        processParameterDocument(staticOptions, properties);
+
+        // Phase 2: Process inline options (override parameter-document settings)
         if (dynamicOptions != null) {
             for (final Option option : dynamicOptions) {
-                if (Namespaces.XSLT_XQUERY_SERIALIZATION_NS.equals(option.getQName().getNamespaceURI())) {
+                if (Namespaces.XSLT_XQUERY_SERIALIZATION_NS.equals(option.getQName().getNamespaceURI())
+                        && !"parameter-document".equals(option.getQName().getLocalPart())) {
                     SerializerUtils.setProperty(option.getQName().getLocalPart(), option.getContents(), properties,
-                            inScopeNamespaces::get);
+                            this::getURIForPrefix);
                 }
             }
         }
@@ -3268,9 +3439,59 @@ public class XQueryContext implements BinaryValueManager, Context {
         if (staticOptions != null) {
             for (final Option option : staticOptions) {
                 if (Namespaces.XSLT_XQUERY_SERIALIZATION_NS.equals(option.getQName().getNamespaceURI())
+                        && !"parameter-document".equals(option.getQName().getLocalPart())
                         && !properties.containsKey(option.getQName().getLocalPart())) {
                     SerializerUtils.setProperty(option.getQName().getLocalPart(), option.getContents(), properties,
-                            inScopeNamespaces::get);
+                            this::getURIForPrefix);
+                }
+            }
+        }
+    }
+
+    /**
+     * Process the parameter-document serialization option if present.
+     * Loads the referenced XML file and extracts serialization parameters.
+     */
+    private void processParameterDocument(final List<Option> options, final Properties properties) throws XPathException {
+        if (options == null) return;
+        for (final Option option : options) {
+            if (Namespaces.XSLT_XQUERY_SERIALIZATION_NS.equals(option.getQName().getNamespaceURI())
+                    && "parameter-document".equals(option.getQName().getLocalPart())) {
+                final String docPath = option.getContents().trim();
+                if (docPath.isEmpty()) continue;
+                try {
+                    // Resolve relative to static base URI
+                    URI resolvedUri;
+                    final AnyURIValue baseURI = getBaseURI();
+                    if (baseURI != null && !baseURI.getStringValue().isEmpty()) {
+                        resolvedUri = new URI(baseURI.getStringValue()).resolve(docPath);
+                    } else {
+                        resolvedUri = new URI(docPath);
+                    }
+
+                    // Load and parse the XML document
+                    final java.io.InputStream is;
+                    if ("file".equals(resolvedUri.getScheme())) {
+                        is = new java.io.FileInputStream(new java.io.File(resolvedUri));
+                    } else if (resolvedUri.getScheme() == null) {
+                        // Bare path — try as file
+                        is = new java.io.FileInputStream(resolvedUri.getPath());
+                    } else {
+                        is = resolvedUri.toURL().openStream();
+                    }
+
+                    try (is) {
+                        final org.exist.dom.memtree.DocumentImpl doc = DocUtils.parse(this, is);
+                        if (doc != null) {
+                            SerializerUtils.getSerializationOptions(
+                                    getRootExpression(), doc, properties);
+                        }
+                    }
+                } catch (final Exception e) {
+                    // Parameter document loading failure is not fatal — log and continue
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("Failed to load parameter-document '{}': {}", docPath, e.getMessage());
+                    }
                 }
             }
         }
@@ -3432,6 +3653,27 @@ public class XQueryContext implements BinaryValueManager, Context {
     @Override
     public void setSource(final Source source) {
         this.source = source;
+    }
+
+    /**
+     * Get how much of a failed execution may be disclosed to the caller.
+     *
+     * @return the error disclosure level, never null
+     */
+    public ErrorDisclosure getErrorDisclosure() {
+        return errorDisclosure;
+    }
+
+    /**
+     * Set how much of a failed execution may be disclosed to the caller.
+     *
+     * This must be recomputed from the current subject on every execution — a compiled query is
+     * pooled and shared between users, so the level of a previous execution must never be reused.
+     *
+     * @param errorDisclosure the error disclosure level
+     */
+    public void setErrorDisclosure(final ErrorDisclosure errorDisclosure) {
+        this.errorDisclosure = errorDisclosure;
     }
 
     @Override
@@ -3689,10 +3931,7 @@ public class XQueryContext implements BinaryValueManager, Context {
             }
 
             final ModuleVertex that = (ModuleVertex) o;
-            if (!namespaceURI.equals(that.namespaceURI)) {
-                return false;
-            }
-            return location.equals(that.location);
+            return namespaceURI.equals(that.namespaceURI) && location.equals(that.location);
         }
 
         @Override

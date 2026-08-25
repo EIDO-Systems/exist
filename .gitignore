@@ -8,12 +8,34 @@ target/
 # quartz artefacts
 dependency-reduced-pom.xml
 
+# Maven generated
+effective-pom.xml
+.flattened-pom.xml
+
+# XQTS test artefacts
+work/
+
 # IDE specific files
 .idea/*
 !/.idea/runConfigurations
 *.iml
-.vscode
+.vscode/
+.cursor/
+.zed/
 
 # OS specific files
 .DS_Store
 
+# Claude planning files
+plans/
+.codacy/
+.moderne/*
+!.moderne/context/
+!.moderne/moderne.yml
+.github/instructions/
+
+# Debug logs (e.g. from reindex investigation)
+reindex-dbg.log
+
+# Temporary files occasionally created by Ant replaceregexp
+/tmp*tmp

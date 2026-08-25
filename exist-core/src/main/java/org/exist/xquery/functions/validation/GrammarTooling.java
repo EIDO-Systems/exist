@@ -32,12 +32,12 @@ import org.apache.xerces.xni.grammars.XMLGrammarDescription;
 import org.apache.xerces.xni.parser.XMLInputSource;
 
 import org.exist.Namespaces;
+import org.exist.collections.MutableCollection;
 import org.exist.dom.QName;
 import org.exist.dom.memtree.MemTreeBuilder;
 import org.exist.dom.memtree.NodeImpl;
 import org.exist.storage.BrokerPool;
 import org.exist.util.Configuration;
-import org.exist.util.XMLReaderObjectFactory;
 import org.exist.validation.GrammarPool;
 import org.exist.xquery.BasicFunction;
 import org.exist.xquery.Cardinality;
@@ -72,16 +72,18 @@ public class GrammarTooling extends BasicFunction  {
     private final Configuration config;
 
 
-    public final static String cacheReport="<report>\n"+
-            "\t<grammar type=\"...\"\n" +
-            "\t\t<Namespace>....\n" +
-            "\t\t<BaseSystemId>...\n" +
-            "\t\t<LiteralSystemId>...\n" +
-            "\t\t<ExpandedSystemId>....\n" +
-            "\t</grammar>\n" +
-            "\t...\n" +
-            "\t...\n" +
-            "</report>\n";
+    public final static String cacheReport="""
+            <report>
+            	<grammar type="..."
+            		<Namespace>....
+            		<BaseSystemId>...
+            		<LiteralSystemId>...
+            		<ExpandedSystemId>....
+            	</grammar>
+            	...
+            	...
+            </report>
+            """;
     
     // Setup function signature
     public final static FunctionSignature[] signatures = {
@@ -139,7 +141,7 @@ public class GrammarTooling extends BasicFunction  {
     throws XPathException {
         
         final GrammarPool grammarpool
-            = (GrammarPool) config.getProperty(XMLReaderObjectFactory.GRAMMAR_POOL);
+            = (GrammarPool) config.getProperty(GrammarPool.GRAMMAR_POOL_ELEMENT);
         
         if (isCalledAs("clear-grammar-cache")){
             
@@ -147,9 +149,11 @@ public class GrammarTooling extends BasicFunction  {
             
             final int before = countTotalNumberOfGrammar(grammarpool);
             LOG.debug("Clearing {} grammars", before);
-            
+
             clearGrammarPool(grammarpool);
-            
+            Jaxp.clearXsd11DetectionCache();
+            MutableCollection.clearXsd11SchemaByNamespaceCache();
+
             final int after = countTotalNumberOfGrammar(grammarpool);
             LOG.debug("Remained {} grammars", after);
             

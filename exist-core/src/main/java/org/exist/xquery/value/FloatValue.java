@@ -22,9 +22,8 @@
 package org.exist.xquery.value;
 
 import com.ibm.icu.text.Collator;
-import net.sf.saxon.tree.util.FastStringBuffer;
-import net.sf.saxon.value.FloatingPointConverter;
 import org.exist.util.ByteConversion;
+import org.exist.util.SaxonConversions;
 import org.exist.xquery.Constants;
 import org.exist.xquery.ErrorCodes;
 import org.exist.xquery.Expression;
@@ -69,17 +68,18 @@ public class FloatValue extends NumericValue {
     public FloatValue(final Expression expression, String stringValue) throws XPathException {
         super(expression);
         try {
-            switch (stringValue) {
-                case "INF" -> value = Float.POSITIVE_INFINITY;
+            final String trimmed = stringValue == null ? null : stringValue.strip();
+            switch (trimmed) {
+                case "INF", "+INF" -> value = Float.POSITIVE_INFINITY;
                 case "-INF" -> value = Float.NEGATIVE_INFINITY;
                 case "NaN" -> value = Float.NaN;
-                case null, default -> value = Float.parseFloat(stringValue);
+                case null, default -> value = Float.parseFloat(trimmed);
             }
         } catch (final NumberFormatException e) {
             throw new XPathException(getExpression(), ErrorCodes.FORG0001, "cannot construct "
                     + Type.getTypeName(this.getItemType())
                     + " from \""
-                    + getStringValue()
+                    + stringValue
                     + "\"");
         }
     }
@@ -115,10 +115,7 @@ public class FloatValue extends NumericValue {
 		return s;	
 		*/
 
-        final FastStringBuffer sb = new FastStringBuffer(20);
-        //0 is a dummy parameter
-        FloatingPointConverter.appendFloat(sb, value, false);
-        return sb.toString();
+        return SaxonConversions.floatToString(value);
     }
 
     /* (non-Javadoc)
@@ -527,11 +524,6 @@ public class FloatValue extends NumericValue {
         } else {
             return getType() < other.getType() ? Constants.INFERIOR : Constants.SUPERIOR;
         }
-    }
-
-    @Override
-    public int hashCode() {
-        return Float.valueOf(value).hashCode();
     }
 
     /**

@@ -38,6 +38,8 @@ import javax.xml.stream.StreamFilter;
 import javax.xml.stream.XMLStreamException;
 import javax.xml.stream.XMLStreamReader;
 import java.io.IOException;
+import java.util.ArrayDeque;
+import java.util.Deque;
 
 /**
  * Processes all location path steps (like descendant::*, ancestor::XXX).
@@ -57,8 +59,16 @@ public class LocationStep extends Step {
     protected UpdateListener listener = null;
     protected Expression parent = null;
 
-    // Fields for caching the last result
-    protected CachedResult cached = null;
+    /**
+     * Whether this step is the initial (first) step of its parent expression,
+     * as determined during {@link #analyze(AnalyzeContextInfo)}. This is cached
+     * because the parent's child list may be rewritten after analysis (for
+     * example, {@link Function#checkArgument} wraps a function argument in a
+     * {@link DynamicCardinalityCheck} or type-check expression), which would
+     * otherwise make a lazy {@code parent.getSubExpression(0) == this} test in
+     * {@link #getDependencies()} report the wrong answer at evaluation time.
+     */
+    private boolean initialStep = false;
 
     //private int parentDeps = Dependency.UNKNOWN_DEPENDENCY;
     private boolean preloadedData = false;
@@ -96,10 +106,12 @@ public class LocationStep extends Step {
         int deps = Dependency.CONTEXT_SET;
 
         // self axis has an obvious dependency on the context item
-        // likewise we depend on the context item if this is a single path step (outside a predicate)
+        // likewise we depend on the context item if this is the initial step of
+        // the enclosing expression (outside a predicate). initialStep is captured
+        // during analyze, before the parent's child list may be rewritten (e.g. a
+        // function argument being wrapped in a cardinality/type check). See #6521.
         if (!this.inPredicate &&
-                (this.axis == Constants.SELF_AXIS ||
-                        (parent != null && parent.getSubExpressionCount() > 0 && parent.getSubExpression(0) == this))) {
+                (this.axis == Constants.SELF_AXIS || this.initialStep)) {
             deps = deps | Dependency.CONTEXT_ITEM;
         }
 
@@ -263,40 +275,61 @@ public class LocationStep extends Step {
             this.axis = Constants.DESCENDANT_AXIS;
         }
 
+        final Expression contextStep;
+        final NodeTest stepTest;
+        final NodeTest contextStepTest;
+
         // static analysis for empty-sequence
         switch (axis) {
             case Constants.SELF_AXIS:
-                if (getTest().getType() != Type.NODE) {
-                    final Expression contextStep = contextInfo.getContextStep();
-                    if (contextStep instanceof LocationStep cStep) {
+                if (getTest().getType() == Type.NODE) {
+                    break;
+                }
 
-                        // WM: the following checks will only work on simple filters like //a[self::b], so we
-                        // have to make sure they are not applied to more complex expression types
-                        if (parent.getSubExpressionCount() == 1 && !Type.subTypeOf(getTest().getType(), cStep.getTest().getType())) {
-                            throw new XPathException(this,
-                                    ErrorCodes.XPST0005, "Got nothing from self::" + getTest() + ", because parent node kind " + Type.getTypeName(cStep.getTest().getType()));
-                        }
+                // WM: the following checks will only work on simple filters like //a[self::b], so we
+                // have to make sure they are not applied to more complex expression types
+                if (parent.getSubExpressionCount() > 1) {
+                    break;
+                }
 
-                        if (parent.getSubExpressionCount() == 1 && !(cStep.getTest().isWildcardTest() || getTest().isWildcardTest()) && !cStep.getTest().equals(getTest())) {
-                            throw new XPathException(this,
-                                    ErrorCodes.XPST0005, "Self::" + getTest() + " called on set of nodes which do not contain any nodes of this name.");
-                        }
-                    }
+                contextStep = contextInfo.getContextStep();
+                if (!(contextStep instanceof LocationStep cStep)) {
+                    break;
+                }
+
+                stepTest = getTest();
+                contextStepTest = cStep.getTest();
+
+                if (!Type.subTypeOf(stepTest.getType(), contextStepTest.getType())) {
+                    // return empty sequence
+                    contextInfo.setStaticType(Type.EMPTY_SEQUENCE);
+                    staticReturnType = Type.EMPTY_SEQUENCE;
+                    break;
+                }
+
+                if (!stepTest.isWildcardTest() &&
+                        !contextStepTest.isWildcardTest() &&
+                        !contextStepTest.equals(stepTest)) {
+                    // return empty sequence
+                    contextInfo.setStaticType(Type.EMPTY_SEQUENCE);
+                    staticReturnType = Type.EMPTY_SEQUENCE;
                 }
                 break;
-//		case Constants.DESCENDANT_AXIS:
+//		      case Constants.DESCENDANT_AXIS:
             case Constants.DESCENDANT_SELF_AXIS:
-                final Expression contextStep = contextInfo.getContextStep();
-                if (contextStep instanceof LocationStep cStep) {
+                contextStep = contextInfo.getContextStep();
+                if (!(contextStep instanceof LocationStep cStep)) {
+                    break;
+                }
 
-                    if ((
-                            cStep.getTest().getType() == Type.ATTRIBUTE ||
-                                    cStep.getTest().getType() == Type.TEXT
-                    )
-                            && cStep.getTest() != getTest()) {
-                        throw new XPathException(this,
-                                ErrorCodes.XPST0005, "Descendant-or-self::" + getTest() + " from an attribute gets nothing.");
-                    }
+                stepTest = getTest();
+                contextStepTest = cStep.getTest();
+
+                if ((contextStepTest.getType() == Type.ATTRIBUTE || contextStepTest.getType() == Type.TEXT) &&
+                        contextStepTest != stepTest) {
+                    // return empty sequence
+                    contextInfo.setStaticType(Type.EMPTY_SEQUENCE);
+                    staticReturnType = Type.EMPTY_SEQUENCE;
                 }
                 break;
 //		case Constants.PARENT_AXIS:
@@ -306,6 +339,13 @@ public class LocationStep extends Step {
 
         // TODO : log somewhere ?
         super.analyze(contextInfo);
+
+        // Capture whether this step is the initial step of its parent expression
+        // now, while the parent's child list still reflects the source structure.
+        // It may be rewritten afterwards (e.g. Function.checkArgument wrapping the
+        // argument), so deferring this test to getDependencies() is unreliable.
+        this.initialStep = parent != null && parent.getSubExpressionCount() > 0
+                && parent.getSubExpression(0) == this;
     }
 
     @Override
@@ -329,30 +369,6 @@ public class LocationStep extends Step {
         if (contextItem != null) {
             contextSequence = contextItem.toSequence();
         }
-        /*
-         * if(contextSequence == null) //Commented because this the high level
-         * result nodeset is *really* null result = NodeSet.EMPTY_SET; //Try to
-         * return cached results else
-         */
-        // TODO: disabled cache for now as it may cause concurrency issues
-        // better use compile-time inspection and maybe a pragma to mark those
-        // sections in the query that can be safely cached
-        // if (cached != null && cached.isValid(contextSequence, contextItem)) {
-        //
-        // // WARNING : commented since predicates are *also* applied below !
-        // // -pb
-        // /*
-        // * if (predicates.size() > 0) { applyPredicate(contextSequence,
-        // * cached.getResult()); } else {
-        // */
-        // result = cached.getResult();
-        // if (context.getProfiler().isEnabled()) {
-        // LOG.debug("Using cached results");
-        // }
-        // context.getProfiler().message(this, Profiler.OPTIMIZATIONS,
-        // "Using cached results", result);
-        //
-        // // }
 
         Sequence result;
         if (needsComputation()) {
@@ -434,11 +450,8 @@ public class LocationStep extends Step {
         } else {
             result = NodeSet.EMPTY_SET;
         }
-        // Caches the result
         if (axis != Constants.SELF_AXIS && contextSequence != null
                 && contextSequence.isCacheable()) {
-            // TODO : cache *after* removing duplicates ? -pb
-            cached = new CachedResult(contextSequence, contextItem, result);
             registerUpdateListener();
         }
         // Remove duplicate nodes
@@ -488,8 +501,8 @@ public class LocationStep extends Step {
 
         if (hasPreloadedData()) {
             @Nullable final NodeSet ns;
-            if (contextSequence instanceof NodeSet) {
-                ns = (NodeSet) contextSequence;
+            if (contextSequence instanceof NodeSet set) {
+                ns = set;
             } else {
                 ns = null;
             }
@@ -532,10 +545,10 @@ public class LocationStep extends Step {
 
             if (Type.subTypeOf(nodeTestType, Type.NODE)) {
                 if (Expression.NO_CONTEXT_ID != contextId) {
-                    if (contextSet instanceof VirtualNodeSet) {
-                        ((VirtualNodeSet) contextSet).setInPredicate(true);
-                        ((VirtualNodeSet) contextSet).setContextId(contextId);
-                        ((VirtualNodeSet) contextSet).setSelfIsContext();
+                    if (contextSet instanceof VirtualNodeSet set) {
+                        set.setInPredicate(true);
+                        set.setContextId(contextId);
+                        set.setSelfIsContext();
                     } else if (Type.subTypeOf(contextSet.getItemType(), Type.NODE)) {
                         for (final NodeProxy p : contextSet) {
                             if (test.matches(p)) {
@@ -929,11 +942,15 @@ public class LocationStep extends Step {
                         final NodeProxy root = new NodeProxy(this, node);
                         final StreamFilter filter;
                         if (axis == Constants.PRECEDING_AXIS) {
-                            filter = new PrecedingFilter(test, root, next, result, contextId);
+                            filter = new PrecedingFilter(test, root, next, result, contextId, position);
                         } else {
                             filter = new FollowingFilter(test, root, next, result, contextId, position);
                         }
-                        final IEmbeddedXMLStreamReader reader = context.getBroker().getXMLStreamReader(root, false);
+                        // See readerStartForWildcardAxis: for FOLLOWING_AXIS we now start the
+                        // reader at the reference node, eliminating the position-dependent
+                        // doc-start walk reported in #2129.
+                        final IEmbeddedXMLStreamReader reader = context.getBroker()
+                                .getXMLStreamReader(readerStartForWildcardAxis(node, root, next), false);
                         reader.filter(filter);
                     }
                 }
@@ -980,6 +997,32 @@ public class LocationStep extends Step {
                 }
             }
         }
+    }
+
+    /**
+     * Decide where the wildcard preceding-or-following StAX reader should start.
+     *
+     * <p>For PRECEDING_AXIS we keep the historical behaviour and walk the document-child's
+     * subtree from its root; the {@link PrecedingFilter} short-circuits as soon as the reader
+     * crosses the reference node.</p>
+     *
+     * <p>For FOLLOWING_AXIS we start the reader at the reference node itself when it lies
+     * inside this document-child's subtree. The {@link FollowingFilter} already skips the
+     * reference node and its descendants (via its isAfter / isDescendantOf checks) and
+     * terminates on END_ELEMENT at the document-child's tree level, so starting later in
+     * document order is safe and removes the O(refPosition) doc-start walk reported in
+     * issue #2129. When the reference node is in some other document-child's subtree, fall
+     * back to walking from this subtree's root - every event in it is by definition after
+     * the reference node.</p>
+     */
+    private NodeHandle readerStartForWildcardAxis(final NodeHandle node, final NodeProxy root,
+            final NodeProxy next) {
+        if (axis != Constants.FOLLOWING_AXIS) {
+            return node;
+        }
+        final NodeId rootId = root.getNodeId();
+        final NodeId refId = next.getNodeId();
+        return refId.equals(rootId) || refId.isDescendantOf(rootId) ? next : node;
     }
 
     /**
@@ -1035,7 +1078,7 @@ public class LocationStep extends Step {
                         if (Expression.NO_CONTEXT_ID != contextId) {
                             ancestor.addContextNode(contextId, current);
                         } else {
-                            ancestor.copyContext(current);
+                            NodeProxy.propagatePredicateContextFrom(ancestor, current, contextId);
                         }
                         ancestor.addMatches(current);
                         result.add(ancestor);
@@ -1056,7 +1099,7 @@ public class LocationStep extends Step {
                                 if (Expression.NO_CONTEXT_ID != contextId) {
                                     ancestor.addContextNode(contextId, current);
                                 } else {
-                                    ancestor.copyContext(current);
+                                    NodeProxy.propagatePredicateContextFrom(ancestor, current, contextId);
                                 }
                                 ancestor.addMatches(current);
                                 result.add(ancestor);
@@ -1193,7 +1236,6 @@ public class LocationStep extends Step {
             listener = new UpdateListener() {
                 @Override
                 public void documentUpdated(final DocumentImpl document, final int event) {
-                    cached = null;
                     if (document == null || event == UpdateListener.ADD || event == UpdateListener.REMOVE) {
                         // clear all
                         currentDocs = null;
@@ -1251,7 +1293,6 @@ public class LocationStep extends Step {
             currentSet = null;
             currentDocs = null;
             optimized = false;
-            cached = null;
             listener = null;
         }
     }
@@ -1305,7 +1346,7 @@ public class LocationStep extends Step {
 
                     if (Expression.IGNORE_CONTEXT != contextId) {
                         if (Expression.NO_CONTEXT_ID == contextId) {
-                            sibling.copyContext(start);
+                            NodeProxy.propagatePredicateContextFrom(sibling, start, contextId);
                         } else {
                             sibling.addContextNode(contextId, start);
                         }
@@ -1360,7 +1401,7 @@ public class LocationStep extends Step {
                             StaXUtil.streamType2DOM(reader.getEventType()), ((EmbeddedXMLStreamReader) reader).getCurrentPosition());
                     if (Expression.IGNORE_CONTEXT != contextId) {
                         if (Expression.NO_CONTEXT_ID == contextId) {
-                            sibling.copyContext(referenceNode);
+                            NodeProxy.propagatePredicateContextFrom(sibling, referenceNode, contextId);
                         } else {
                             sibling.addContextNode(contextId, referenceNode);
                         }
@@ -1410,7 +1451,7 @@ public class LocationStep extends Step {
                         StaXUtil.streamType2DOM(reader.getEventType()), ((EmbeddedXMLStreamReader) reader).getCurrentPosition());
                 if (Expression.IGNORE_CONTEXT != contextId) {
                     if (Expression.NO_CONTEXT_ID == contextId) {
-                        proxy.copyContext(referenceNode);
+                        NodeProxy.propagatePredicateContextFrom(proxy, referenceNode, contextId);
                     } else {
                         proxy.addContextNode(contextId, referenceNode);
                     }
@@ -1428,12 +1469,19 @@ public class LocationStep extends Step {
     private class PrecedingFilter extends AbstractFilterBase {
         final NodeProxy root;
         final NodeProxy referenceNode;
+        // Sliding window of the most recent {@code limit} matches. Non-null only
+        // when limit > 0 (positional predicate {@code [K]} present). The K-th
+        // preceding element in axis order is the (K-th-from-end) match in doc
+        // order, so any match earlier than the K most recent cannot be selected
+        // and may be discarded as new ones are found.
+        final Deque<NodeProxy> window;
 
         PrecedingFilter(final NodeTest test, final NodeProxy root, final NodeProxy referenceNode, final NodeSet result,
-                final int contextId) {
-            super(test, result, contextId, -1);
+                final int contextId, final int limit) {
+            super(test, result, contextId, limit);
             this.root = root;
             this.referenceNode = referenceNode;
+            this.window = limit > 0 ? new ArrayDeque<>(limit) : null;
         }
 
         @Override
@@ -1442,11 +1490,16 @@ public class LocationStep extends Step {
 
             if (reader.getEventType() == XMLStreamReader.END_ELEMENT) {
                 // exited the root element, so  stop filtering
-                return currentId.getTreeLevel() != root.getNodeId().getTreeLevel();
+                if (currentId.getTreeLevel() == root.getNodeId().getTreeLevel()) {
+                    flushWindow();
+                    return false;
+                }
+                return true;
             }
 
             final NodeId refId = referenceNode.getNodeId();
             if (currentId.compareTo(refId) >= 0) {
+                flushWindow();
                 return false;
             }
 
@@ -1455,14 +1508,30 @@ public class LocationStep extends Step {
                         StaXUtil.streamType2DOM(reader.getEventType()), ((EmbeddedXMLStreamReader) reader).getCurrentPosition());
                 if (Expression.IGNORE_CONTEXT != contextId) {
                     if (Expression.NO_CONTEXT_ID == contextId) {
-                        proxy.copyContext(referenceNode);
+                        NodeProxy.propagatePredicateContextFrom(proxy, referenceNode, contextId);
                     } else {
                         proxy.addContextNode(contextId, referenceNode);
                     }
                 }
-                result.add(proxy);
+                if (window != null) {
+                    if (window.size() == limit) {
+                        window.pollFirst();
+                    }
+                    window.addLast(proxy);
+                } else {
+                    result.add(proxy);
+                }
             }
             return true;
+        }
+
+        private void flushWindow() {
+            if (window != null) {
+                for (final NodeProxy proxy : window) {
+                    result.add(proxy);
+                }
+                window.clear();
+            }
         }
     }
 

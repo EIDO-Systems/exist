@@ -21,13 +21,13 @@
  */
 package org.exist.management.impl;
 
+import org.exist.management.impl.BinaryInputStreamCacheInfo.CacheType;
 import org.exist.storage.BrokerPool;
 import org.exist.util.io.FileFilterInputStreamCache;
 import org.exist.util.io.FilterInputStreamCache;
 import org.exist.util.io.FilterInputStreamCacheMonitor;
 import org.exist.util.io.FilterInputStreamCacheMonitor.FilterInputStreamCacheInfo;
 import org.exist.util.io.MemoryMappedFileFilterInputStreamCache;
-import org.exist.management.impl.BinaryInputStreamCacheInfo.CacheType;
 
 import javax.management.MalformedObjectNameException;
 import javax.management.ObjectName;
@@ -36,13 +36,36 @@ import java.util.Collection;
 import java.util.List;
 import java.util.Optional;
 
-public class BinaryValues implements BinaryValuesMXBean {
-    private final String instanceId;
-
-    public BinaryValues(final BrokerPool pool) {
-        this.instanceId = pool.getId();
+/**
+ * JMX MBean exposing information about active binary value input-stream caches
+ * for a specific database instance.
+ */
+public record BinaryValues(String instanceId) implements BinaryValuesMXBean {
+    /**
+     * Create a new BinaryValues MBean for the given broker pool.
+     *
+     * @param instanceId the broker pool representing the database instance
+     */
+    public BinaryValues(final BrokerPool instanceId) {
+        this(instanceId.getId());
     }
 
+    /**
+     * Explicit JavaBean-style accessor required by the MBean attribute discovery,
+     * which relies on the {@code getXxx()} naming convention. The record's
+     * auto-generated {@link #instanceId()} accessor does not satisfy that convention,
+     * so we delegate to it here. See <a href="https://github.com/eXist-db/exist/issues/6379">#6379</a>.
+     */
+    @Override
+    public String getInstanceId() {
+        return instanceId;
+    }
+
+    /**
+     * Return a JMX object-name query that matches all BinaryValues MBeans across all instances.
+     *
+     * @return the wildcard query string
+     */
     public static String getAllInstancesQuery() {
         return getName("*");
     }
@@ -57,11 +80,6 @@ public class BinaryValues implements BinaryValuesMXBean {
     }
 
     @Override
-    public String getInstanceId() {
-        return instanceId;
-    }
-
-    @Override
     public List<BinaryInputStreamCacheInfo> getCacheInstances() {
         final FilterInputStreamCacheMonitor monitor = FilterInputStreamCacheMonitor.getInstance();
         final Collection<FilterInputStreamCacheInfo> cacheInstances = monitor.getActive();
@@ -71,15 +89,16 @@ public class BinaryValues implements BinaryValuesMXBean {
 
             final BinaryInputStreamCacheInfo result;
             final FilterInputStreamCache cache = cacheInstance.getCache();
-            if (cache instanceof FileFilterInputStreamCache) {
-                result = new BinaryInputStreamCacheInfo(CacheType.FILE, cacheInstance.getRegistered(),
-                        Optional.of(((FileFilterInputStreamCache) cache).getFilePath()), cache.getLength());
-            } else if (cache instanceof MemoryMappedFileFilterInputStreamCache) {
-                result = new BinaryInputStreamCacheInfo(CacheType.MEMORY_MAPPED_FILE, cacheInstance.getRegistered(),
-                        Optional.of(((MemoryMappedFileFilterInputStreamCache) cache).getFilePath()), cache.getLength());
-            } else {
-                result = new BinaryInputStreamCacheInfo(CacheType.MEMORY, cacheInstance.getRegistered(),
-                        Optional.empty(), cache.getLength());
+            switch (cache) {
+                case final FileFilterInputStreamCache streamCache1 ->
+                        result = new BinaryInputStreamCacheInfo(CacheType.FILE, cacheInstance.getRegistered(),
+                                Optional.of(streamCache1.getFilePath()), cache.getLength());
+                case final MemoryMappedFileFilterInputStreamCache streamCache ->
+                        result = new BinaryInputStreamCacheInfo(CacheType.MEMORY_MAPPED_FILE, cacheInstance.getRegistered(),
+                                Optional.of(streamCache.getFilePath()), cache.getLength());
+                case null, default ->
+                        result = new BinaryInputStreamCacheInfo(CacheType.MEMORY, cacheInstance.getRegistered(),
+                                Optional.empty(), cache.getLength()); // DW: This might be a null cache
             }
 
             results.add(result);

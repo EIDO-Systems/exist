@@ -25,6 +25,8 @@ module namespace ao="http://exist-db.org/xquery/test/arrowop";
 
 declare namespace test="http://exist-db.org/xquery/xqsuite";
 
+import module namespace util="http://exist-db.org/xquery/util";
+
 declare
     %test:assertEquals("Hello world")
 function ao:func-by-name1() {
@@ -149,10 +151,36 @@ declare %private function ao:string-join($s as xs:string*, $sep as xs:string) {
     string-join($s, $sep)
 };
 
+(: EXPR => f(args) is exactly the call f(EXPR, args) and applies the same function conversion
+   rules: xs:integer items do not convert to a declared xs:string* parameter, so this raises
+   XPTY0004 — identical to the direct call ao:string-join((1,2,3), "-") and to Saxon. (Before the
+   arrow was compiled to a direct call, the dynamic FunctionReference path was wrongly lenient here
+   and returned "1-2-3", which a normal call never would.) :)
 declare
-    %test:assertEquals("1-2-3")
+    %test:assertError("XPTY0004")
 function ao:type-checks-user-func() {
     (1, 2, 3) => ao:string-join("-")
+};
+
+(: companion to ao:type-checks-user-func: when the left-hand operand already matches the declared
+   xs:string* parameter, the same arrow succeeds — confirming the XPTY0004 above is a type mismatch,
+   not a defect in the arrow itself. Identical to the direct call ao:string-join(("1","2","3"), "-"). :)
+declare
+    %test:assertEquals("1-2-3")
+function ao:type-checks-user-func-strings() {
+    ("1", "2", "3") => ao:string-join("-")
+};
+
+(: the other way to make it type-check: keep integer input but cast to string inside the RHS
+   function, whose parameter then accepts xs:anyAtomicType*. EXPR => f(args) still equals f(EXPR, args). :)
+declare %private function ao:string-join-atomic($s as xs:anyAtomicType*, $sep as xs:string) {
+    string-join($s ! string(.), $sep)
+};
+
+declare
+    %test:assertEquals("1-2-3")
+function ao:type-checks-user-func-cast-inside() {
+    (1, 2, 3) => ao:string-join-atomic("-")
 };
 
 declare function ao:A($x) { 
@@ -276,4 +304,72 @@ function ao:for-each-pair-with-contextitem () {
     (<a/>,<b/>,<a/>,<b/>)
         => for-each-pair((<a/>,<b/>,<a/>,<b/>), function ($a, $b) { node-name($a) || node-name($b) })
         => string-join()
+};
+
+(:~
+    closes https://github.com/eXist-db/exist/issues/3336
+    EXPR => f(?) is f(EXPR, ?): the left-hand side fills the first argument and the placeholder
+    leaves the second open, yielding an arity-1 partial application. Previously the LHS was modelled
+    as a placeholder too, so both slots were left open and applying one argument raised XPST0017.
+ ~:)
+declare
+    %test:assertEquals("ello")
+function ao:placeholder-partial-application() {
+    ("hello" => substring(?))(2)
+};
+
+(:~
+    closes https://github.com/eXist-db/exist/issues/3887
+    The arrow left-hand side is passed as a real argument expression, so a context-sensitive callee
+    (here util:eval) sees the in-scope variables exactly as the direct call util:eval(concat(...))
+    does. Previously the LHS was pre-evaluated and injected via a dynamic FunctionReference, and the
+    variable $v was not visible, raising XPST0008.
+ ~:)
+declare
+    %test:assertEquals(2)
+function ao:context-sensitive-callee-sees-scope() {
+    let $v := 1
+    return concat("$v", "+1") => util:eval()
+};
+
+declare %private function ao:npe-map2($a) { $a };
+
+declare %private function ao:npe-map1($a as xs:string) {
+    tokenize($a, "\|") => for-each(ao:npe-map2(?))
+};
+
+(:~
+    closes https://github.com/eXist-db/exist/issues/3885
+    A named arrow function whose argument is itself a partial application (a '?' placeholder nested
+    inside a call after the arrow) no longer raises a NullPointerException.
+ ~:)
+declare
+    %test:assertEquals("a", "b", "c", "d", "e")
+function ao:nested-partial-after-arrow() {
+    ("a|b", "c", "d|e") => for-each(ao:npe-map1(?))
+};
+
+(:~
+    https://github.com/eXist-db/exist/issues/6471
+    EXPR => f(args) is the call f(EXPR, args), with any argument placeholder following the prepended
+    left operand. A placeholder that pushes the arity past the function's maximum is therefore an
+    unknown-function error: here xs:string has only arity 1, so 1 => xs:string(?) is xs:string(1, ?),
+    and xs:string#2 does not exist (XPST0017).
+ ~:)
+declare
+    %test:assertError("XPST0017")
+function ao:placeholder-exceeds-arity() {
+    1 => xs:string(?)
+};
+
+(:~
+    https://github.com/eXist-db/exist/issues/6471
+    A placeholder on the RHS of the arrow yields a partial function application of f(EXPR, ?). This
+    exercises the variadic fn:concat (the existing ao:placeholder-partial-application covers a fixed
+    arity via fn:substring): ("1" => concat(?)) is concat("1", ?), applied to "1" giving "11".
+ ~:)
+declare
+    %test:assertEquals("11")
+function ao:placeholder-partial-application-variadic() {
+    ("1" => concat(?))("1")
 };

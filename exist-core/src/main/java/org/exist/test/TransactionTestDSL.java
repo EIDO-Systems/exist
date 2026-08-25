@@ -58,13 +58,13 @@ import static org.exist.util.ThreadUtils.newInstanceSubThreadGroup;
 /**
  * A DSL for describing a schedule of
  * transaction operations upon the database.
- *
+ * <p>
  * A type-safe builder pattern is provided
  * for constructing the schedule. Once
  * the schedule is build a scheduler
  * can execute it upon the database
  * and return the results.
- *
+ * <p>
  * The DSL uses recursive types
  * in a similar way to a typed heterogeneous
  * list (such as Shapeless's HList) to ensure
@@ -74,10 +74,10 @@ import static org.exist.util.ThreadUtils.newInstanceSubThreadGroup;
  * At the cost of complexity in implementing
  * the DSL, the recursive typing makes use of
  * the DSL by the user much simpler and safer.
- *
+ * <p>
  * The recursive type implementation was
  * inspired by <a href="https://apocalisp.wordpress.com/2008/10/23/heterogeneous-lists-and-the-limits-of-the-java-type-system/">https://apocalisp.wordpress.com/2008/10/23/heterogeneous-lists-and-the-limits-of-the-java-type-system/</a>.
- *
+ * <p>
  * Example usage for creating a schedule of
  * two transactions, where each will execute in
  * its own thread but operationally linear
@@ -116,7 +116,7 @@ public interface TransactionTestDSL {
 
     /**
      * A Transaction Schedule builder.
-     *
+     * <p>
      * Enables us to build a schedule of operations to be executed
      * within one or more transactions.
      *
@@ -146,7 +146,7 @@ public interface TransactionTestDSL {
 
     /**
      * A schedule builder factory for two transactions T1 and T2.
-     *
+     * <p>
      * Responsible for creating a Schedule Builder which is initialized
      * to the first transaction state.
      */
@@ -462,7 +462,7 @@ public interface TransactionTestDSL {
 
     /**
      * A schedule of two transactions T1 and T2.
-     *
+     * <p>
      * Which are executed concurrently, each in their
      * own thread, but linearly according to the schedule.
      *
@@ -493,30 +493,29 @@ public interface TransactionTestDSL {
 
             final ThreadGroup transactionsThreadGroup = newInstanceSubThreadGroup(brokerPool, "transactionTestDSL");
 
-            // submit t1
-            final ExecutorService t1ExecutorService = Executors.newSingleThreadExecutor(r -> new Thread(transactionsThreadGroup, r, nameInstanceThread(brokerPool, "transaction-test-dsl.transaction-1-schedule")));
-            final Future<U1> t1Result = t1ExecutorService.submit(() -> {
-                try (final DBBroker broker = brokerPool.get(Optional.of(brokerPool.getSecurityManager().getSystemSubject()));
-                     final Txn txn = brokerPool.getTransactionManager().beginTransaction()) {
-                    final U1 result = lastOperation.t1_state.apply(broker, txn, executionListener, null);
-                    txn.commit();
-                    return result;
-                }
-            });
+            // submit t1 and t2 — use try-with-resources to ensure executor shutdown (Java 19+)
+            try (final ExecutorService t1ExecutorService = Executors.newSingleThreadExecutor(r -> new Thread(transactionsThreadGroup, r, nameInstanceThread(brokerPool, "transaction-test-dsl.transaction-1-schedule")));
+                 final ExecutorService t2ExecutorService = Executors.newSingleThreadExecutor(r -> new Thread(transactionsThreadGroup, r, nameInstanceThread(brokerPool, "transaction-test-dsl.transaction-2-schedule")))) {
 
-            // submit t2
-            final ExecutorService t2ExecutorService = Executors.newSingleThreadExecutor(r -> new Thread(transactionsThreadGroup, r, nameInstanceThread(brokerPool, "transaction-test-dsl.transaction-2-schedule")));
-            final Future<U2> t2Result = t2ExecutorService.submit(() -> {
-                try (final DBBroker broker = brokerPool.get(Optional.of(brokerPool.getSecurityManager().getSystemSubject()));
-                     final Txn txn = brokerPool.getTransactionManager().beginTransaction()) {
-                    final U2 result = lastOperation.t2_state.apply(broker, txn, executionListener, null);
-                    txn.commit();
-                    return result;
-                }
-            });
+                final Future<U1> t1Result = t1ExecutorService.submit(() -> {
+                    try (final DBBroker broker = brokerPool.get(Optional.of(brokerPool.getSecurityManager().getSystemSubject()));
+                         final Txn txn = brokerPool.getTransactionManager().beginTransaction()) {
+                        final U1 result = lastOperation.t1_state.apply(broker, txn, executionListener, null);
+                        txn.commit();
+                        return result;
+                    }
+                });
 
-            try {
+                final Future<U2> t2Result = t2ExecutorService.submit(() -> {
+                    try (final DBBroker broker = brokerPool.get(Optional.of(brokerPool.getSecurityManager().getSystemSubject()));
+                         final Txn txn = brokerPool.getTransactionManager().beginTransaction()) {
+                        final U2 result = lastOperation.t2_state.apply(broker, txn, executionListener, null);
+                        txn.commit();
+                        return result;
+                    }
+                });
 
+                //TODO(AR) rather than working with exceptions from Future.get(), it would be better to encapsulate them in a similar way to working on an empty sequence, e.g. could use Either<L,R>???
                 U1 u1 = null;
                 U2 u2 = null;
                 while (true) {
@@ -534,24 +533,13 @@ public interface TransactionTestDSL {
 
                     Thread.sleep(50);
                 }
-            } catch (final ExecutionException | InterruptedException e) {
-                // if we get to here then t1Result or t2Result has thrown an exception
-
-                // force shutdown of transaction threads
-
-                t2ExecutorService.shutdownNow();
-                t1ExecutorService.shutdownNow();
-
-                //TODO(AR) rather than working with exceptions, it would be better to encapsulate them in a similar way to working on an empty sequence, e.g. could use Either<L,R>???
-
-                throw e;
             }
         }
     }
 
     /**
      * A function which describes an operation on the database with a Transaction.
-     *
+     * <p>
      * You can think of this as a function <pre>f(T) -&gt; U</pre>
      * where the database and transaction are available to the
      * function <pre>f</pre>.
@@ -691,7 +679,7 @@ public interface TransactionTestDSL {
          * Executes this, and then the other Transaction Operation
          * on the input type {@code <T>} and returns
          * the results as a tuple.
-         *
+         * <p>
          * e.g. <pre>Tuple2(f(T) -&gt; U, other(T) -&gt; U2)</pre>
          *
          * @param <U2> thr result of the other operation.
@@ -707,7 +695,7 @@ public interface TransactionTestDSL {
         /**
          * Returns a composed function that first applies this function to
          * its input, and then applies the {@code after} function to the result.
-         *
+         * <p>
          * See {@link Function#andThen(Function)}
          *
          * @param <V> the result of the after operation.
@@ -723,7 +711,7 @@ public interface TransactionTestDSL {
         /**
          * Returns a composed function that first applies the {@code before}
          * function to its input, and then applies this function to the result.
-         *
+         * <p>
          * See {@link Function#compose(Function)}
          *
          * @param <V> the input type of the before operation.
@@ -739,7 +727,7 @@ public interface TransactionTestDSL {
 
         /**
          * Returns a function that always returns its input argument.
-         *
+         * <p>
          * See {@link Function#identity()}
          *
          * @param <T> the result of the identity operation.
@@ -754,7 +742,7 @@ public interface TransactionTestDSL {
     /**
      * A simple extension of {@link CountDownLatch}
      * which also provides a name for the latch.
-     *
+     * <p>
      * Useful for debugging latching ordering in
      * transaction schedules.
      */

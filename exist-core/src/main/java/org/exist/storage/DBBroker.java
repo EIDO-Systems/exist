@@ -431,6 +431,59 @@ public interface DBBroker extends AutoCloseable {
         throws PermissionDeniedException;
 
     /**
+     * Resolve a stored resource for the purpose of EXECUTING it, i.e. compiling and
+     * running it as an XQuery.
+     *
+     * Requires {@link org.exist.security.Permission#EXECUTE} on the resource, and — unlike
+     * {@link #getXMLResource(XmldbURI, LockMode)} and {@link #getResource(XmldbURI, int)} —
+     * does not require {@link org.exist.security.Permission#READ}. This mirrors Unix, where
+     * the kernel reads a {@code --x} binary on behalf of a process which cannot read it.
+     * The getters used for data access keep their READ semantics, so reading a query as data
+     * (download, {@code fn:unparsed-text}, {@code util:binary-doc}, …) still requires READ.
+     *
+     * The returned handle also reports whether the current subject may read the source
+     * ({@link ExecutableResource#callerCanRead()}), which callers use to decide how much of
+     * an execution failure they may disclose.
+     *
+     * The document is always resolved with a read lock: execution never writes to the resource
+     * being executed, so there is no write-lock variant to choose.
+     *
+     * @param docURI absolute path to the resource in the database
+     *
+     * @return the executable resource, or null if no document could be found at the specified
+     *     location. The caller must {@link ExecutableResource#close()} it to release the lock.
+     *
+     * @throws PermissionDeniedException if the current subject does not have EXECUTE on the resource
+     */
+    @Nullable ExecutableResource getResourceForExecution(XmldbURI docURI)
+        throws PermissionDeniedException;
+
+    /**
+     * Get the last modified time of a stored resource, for the purpose of deciding whether an
+     * artefact derived from it — a compiled XQuery in the {@link XQueryPool}, a cached URL rewrite,
+     * … — is out of date.
+     *
+     * Whether a resource has changed is not a permission question: it must be answered identically
+     * for every subject, or a caller which may execute but not read a resource evicts the cache
+     * entries shared with everybody else. So <strong>no permission is checked on the document</strong>
+     * and no handle on it escapes — only its timestamp. Reading the resource itself keeps its usual
+     * gates ({@link #getXMLResource(XmldbURI, LockMode)} for READ,
+     * {@link #getResourceForExecution(XmldbURI)} for EXECUTE).
+     *
+     * Locating the document still opens its Collection, which requires
+     * {@link org.exist.security.Permission#EXECUTE} on every Collection along the path, exactly as
+     * every other resolution does.
+     *
+     * @param docURI absolute path to the resource in the database
+     *
+     * @return the last modified time of the resource, or empty if there is no resource at that path
+     *
+     * @throws PermissionDeniedException if the current subject may not traverse the Collection
+     *     hierarchy to the resource
+     */
+    Optional<Long> getDocumentLastModified(XmldbURI docURI) throws PermissionDeniedException;
+
+    /**
      * Get a new document id that does not yet exist within the collection.
      *
      * @param transaction the transaction
@@ -593,7 +646,18 @@ public interface DBBroker extends AutoCloseable {
     enum IndexMode {
         STORE,
         REPAIR,
-        REMOVE
+        REMOVE,
+        /**
+         * Rebuild only custom/extension indexes (Lucene, range, etc.) without
+         * touching the DOM BTree ({@code dom.dbx}) or the structural/value
+         * indexes.  Used by user-triggered {@code xmldb:reindex()} where only
+         * the {@code collection.xconf} configuration has changed — the
+         * document content itself is unchanged, so DOM and structural indexes
+         * are still valid.
+         *
+         * @see <a href="https://github.com/eXist-db/exist/issues/572">#572</a>
+         */
+        REINDEX
     }
 
     /**
@@ -612,11 +676,31 @@ public interface DBBroker extends AutoCloseable {
     void reindexCollection(Txn transaction, @EnsureLocked(mode=LockMode.WRITE_LOCK, type=LockType.COLLECTION) XmldbURI collectionUri)
             throws PermissionDeniedException, IOException, LockException;
 
+    /**
+     * Reindex a Collection and its descendants with the given scope.
+     *
+     * @param transaction the transaction
+     * @param collectionUri The URI of the Collection to reindex
+     * @param scope reindex scope: {@link org.exist.indexing.ReindexScope#ALL},
+     *              {@link org.exist.indexing.ReindexScope#FULLTEXT}, or
+     *              {@link org.exist.indexing.ReindexScope#VECTOR}
+     */
+    void reindexCollection(Txn transaction, @EnsureLocked(mode=LockMode.WRITE_LOCK, type=LockType.COLLECTION) XmldbURI collectionUri,
+            org.exist.indexing.ReindexScope scope)
+            throws PermissionDeniedException, IOException, LockException;
+
     void reindexXMLResource(final Txn txn,
             @EnsureLocked(mode=LockMode.WRITE_LOCK) final DocumentImpl doc);
 
     void reindexXMLResource(final Txn transaction,
             @EnsureLocked(mode=LockMode.WRITE_LOCK) final DocumentImpl doc, final IndexMode mode);
+
+    /**
+     * Reindex a document with the given index mode and reindex scope.
+     */
+    void reindexXMLResource(final Txn transaction,
+            @EnsureLocked(mode=LockMode.WRITE_LOCK) final DocumentImpl doc, final IndexMode mode,
+            org.exist.indexing.ReindexScope scope);
 
     /**
      * Repair indexes. Should delete all secondary indexes and rebuild them.

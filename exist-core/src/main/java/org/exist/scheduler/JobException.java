@@ -23,6 +23,8 @@ package org.exist.scheduler;
 
 import org.quartz.JobExecutionException;
 
+import java.io.Serial;
+
 /**
  * Exception class can be thrown by implementations of org.exist.scheduler.Job.
  *
@@ -31,7 +33,8 @@ import org.quartz.JobExecutionException;
  * @author <a href="mailto:adam.retter@googlemail.com">Adam Retter</a>
  */
 public class JobException extends Exception {
-    
+
+    @Serial
     private static final long serialVersionUID = 1567438994821964637L;
 
     public enum JobExceptionAction {
@@ -54,7 +57,7 @@ public class JobException extends Exception {
      *
      * Jobs may be removed, re-fired immediately or left for their next execution
      *
-     * @throws  JobExecutionException  DOCUMENT ME!
+     * @throws  JobExecutionException if an error occurs while cleaning up the job.
      */
     public void cleanupJob() throws JobExecutionException {
         switch(jobExceptionAction) {

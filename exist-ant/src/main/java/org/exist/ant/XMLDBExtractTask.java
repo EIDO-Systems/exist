@@ -39,8 +39,6 @@ import java.nio.file.Path;
 import java.util.List;
 import java.util.Properties;
 
-import static java.nio.charset.StandardCharsets.UTF_8;
-
 
 /**
  * an ant task to extract the content of a collection or resource.
@@ -211,8 +209,8 @@ public class XMLDBExtractTask extends AbstractXMLDBTask {
      * @throws IOException if an I/O error occurs
      */
     private void writeResource(final Resource res, final Path dest) throws XMLDBException, IOException {
-        if (res instanceof XMLResource) {
-            writeXMLResource((XMLResource) res, dest);
+        if (res instanceof XMLResource lResource) {
+            writeXMLResource(lResource, dest);
         } else if (res instanceof ExtendedResource) {
             writeBinaryResource(res, dest);
         }
@@ -263,10 +261,10 @@ public class XMLDBExtractTask extends AbstractXMLDBTask {
         final Writer writer;
         if (Files.isDirectory(dest)) {
             final Path file = dest.resolve(res.getId());
-            writer = Files.newBufferedWriter(file, UTF_8);
+            writer = Files.newBufferedWriter(file);
 
         } else {
-            writer = Files.newBufferedWriter(destFile, UTF_8);
+            writer = Files.newBufferedWriter(destFile);
         }
         return writer;
     }

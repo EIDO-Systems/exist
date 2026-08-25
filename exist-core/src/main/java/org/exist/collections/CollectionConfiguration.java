@@ -40,6 +40,7 @@ import org.exist.storage.DBBroker;
 import org.exist.storage.IndexSpec;
 import org.exist.util.DatabaseConfigurationException;
 import org.exist.util.ParametersExtractor;
+import org.exist.util.SchemaVersion;
 import org.exist.util.XMLReaderObjectFactory;
 import org.exist.xmldb.XmldbURI;
 import org.w3c.dom.Document;
@@ -129,6 +130,8 @@ public class CollectionConfiguration {
                     "' in configuration document. Got '" + root.getNamespaceURI() + "'", checkOnly);
             return;
         }
+        SchemaVersion.logDocumentVersion(LOG, root, SchemaVersion.COLLECTION_XCONF,
+                "collection.xconf" + (docName != null ? " (" + docName + ")" : ""));
         final NodeList childNodes = root.getChildNodes();
         for (int i = 0; i < childNodes.getLength(); i++) {
             Node node = childNodes.item(i);
@@ -163,7 +166,7 @@ public class CollectionConfiguration {
                     case VALIDATION_ELEMENT -> {
                         final Element elem = (Element) node;
                         final String mode = elem.getAttribute(VALIDATION_MODE_ATTR);
-                        if (mode == null) {
+                        if (mode.isEmpty()) {
                             LOG.debug("Unable to determine validation mode in {}", srcCollectionURI);
                             validationMode = XMLReaderObjectFactory.VALIDATION_SETTING.UNKNOWN;
                         } else {

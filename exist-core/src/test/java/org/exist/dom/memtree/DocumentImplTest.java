@@ -48,9 +48,10 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 public class DocumentImplTest {
 
     private static final String DOC_WITH_NAMESPACES =
-            "<repo:meta xmlns=\"http://exist-db.org/xquery/repo\" xmlns:repo=\"http://exist-db.org/xquery/repo\">\n" +
-            "    <repo:description>some description or other</repo:description>\n" +
-            "</repo:meta>";
+            """
+            <repo:meta xmlns="http://exist-db.org/xquery/repo" xmlns:repo="http://exist-db.org/xquery/repo">
+                <repo:description>some description or other</repo:description>
+            </repo:meta>""";
 
     @Test
     public void checkNamespaces_xerces() throws IOException, ParserConfigurationException, SAXException {
@@ -94,33 +95,26 @@ public class DocumentImplTest {
 
         final Element elem = doc.getDocumentElement();
         final NamedNodeMap attrs = elem.getAttributes();
-        assertEquals(3, attrs.getLength());
+        // Saxon 12 no longer includes the implicit xml namespace declaration
+        assertEquals(2, attrs.getLength());
 
         int index = 0;
 
         final Attr attr1 = (Attr)attrs.item(index++);
         assertEquals(Node.ATTRIBUTE_NODE, attr1.getNodeType());
         assertEquals(XMLConstants.XMLNS_ATTRIBUTE_NS_URI, attr1.getNamespaceURI());
-        assertEquals(XMLConstants.XMLNS_ATTRIBUTE, attr1.getPrefix());
-        assertEquals(XMLConstants.XML_NS_PREFIX, attr1.getLocalName());
-        assertEquals(XMLConstants.XMLNS_ATTRIBUTE + ":" + XMLConstants.XML_NS_PREFIX, attr1.getNodeName());
-        assertEquals(XMLConstants.XML_NS_URI, attr1.getValue());
+        assertEquals(null, attr1.getPrefix());
+        assertEquals(XMLConstants.XMLNS_ATTRIBUTE, attr1.getLocalName());
+        assertEquals(XMLConstants.XMLNS_ATTRIBUTE, attr1.getNodeName());
+        assertEquals("http://exist-db.org/xquery/repo", attr1.getValue());
 
         final Attr attr2 = (Attr)attrs.item(index++);
         assertEquals(Node.ATTRIBUTE_NODE, attr2.getNodeType());
         assertEquals(XMLConstants.XMLNS_ATTRIBUTE_NS_URI, attr2.getNamespaceURI());
-        assertEquals(null, attr2.getPrefix());
-        assertEquals(XMLConstants.XMLNS_ATTRIBUTE, attr2.getLocalName());
-        assertEquals(XMLConstants.XMLNS_ATTRIBUTE, attr2.getNodeName());
+        assertEquals(XMLConstants.XMLNS_ATTRIBUTE, attr2.getPrefix());
+        assertEquals("repo", attr2.getLocalName());
+        assertEquals(XMLConstants.XMLNS_ATTRIBUTE + ":repo", attr2.getNodeName());
         assertEquals("http://exist-db.org/xquery/repo", attr2.getValue());
-
-        final Attr attr3 = (Attr)attrs.item(index++);
-        assertEquals(Node.ATTRIBUTE_NODE, attr3.getNodeType());
-        assertEquals(XMLConstants.XMLNS_ATTRIBUTE_NS_URI, attr3.getNamespaceURI());
-        assertEquals(XMLConstants.XMLNS_ATTRIBUTE, attr3.getPrefix());
-        assertEquals("repo", attr3.getLocalName());
-        assertEquals(XMLConstants.XMLNS_ATTRIBUTE + ":repo", attr3.getNodeName());
-        assertEquals("http://exist-db.org/xquery/repo", attr3.getValue());
     }
 
     @Test

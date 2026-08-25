@@ -47,6 +47,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.regex.PatternSyntaxException;
 import net.sf.saxon.regex.RegularExpression;
+import net.sf.saxon.str.StringView;
 
 import static org.exist.xquery.FunctionDSL.*;
 import static org.exist.xquery.functions.fn.FnModule.functionSignatures;
@@ -67,26 +68,35 @@ public final class FunMatches extends Function implements Optimizable, IndexUseR
 
     private static final String FS_MATCHES_NAME = "matches";
     private static final String FS_DESCRIPTION =
-            "The function returns true if $input matches the regular expression " +
-            "supplied as $pattern as influenced by the value of $flags, if present; " +
-            "otherwise, it returns false.\n\n" +
-            "The effect of calling this version of the function with the $flags argument set to a" +
-            "zero-length string is the same as using the other two argument version. " +
-            "Flags are defined in 7.6.1.1 Flags.\n\n" +
-            "If $input is the empty sequence, it is interpreted as the zero-length string.\n\n" +
-            "Unless the metacharacters ^ and $ are used as anchors, the string is considered " +
-            "to match the pattern if any substring matches the pattern. But if anchors are used, " +
-            "the anchors must match the start/end of the string (in string mode), or the " +
-            "start/end of a line (in multiline mode).\n\n" +
-            "Note:\n\n" +
-            "This is different from the behavior of patterns in [XML Schema Part 2: Datatypes " +
-            "Second Edition], where regular expressions are implicitly anchored.\n\n" +
-            "Please note that - in contrast - with the " +
-            "specification - this method allows zero or more items for the string argument.\n\n" +
-            "An error is raised [err:FORX0002] if the value of $pattern is invalid " +
-            "according to the rules described in section 7.6.1 Regular Expression Syntax.\n\n" +
-            "An error is raised [err:FORX0001] if the value of $flags is invalid " +
-            "according to the rules described in section 7.6.1 Regular Expression Syntax.";
+            """
+            The function returns true if $input matches the regular expression \
+            supplied as $pattern as influenced by the value of $flags, if present; \
+            otherwise, it returns false.
+            
+            The effect of calling this version of the function with the $flags argument set to a\
+            zero-length string is the same as using the other two argument version. \
+            Flags are defined in 7.6.1.1 Flags.
+            
+            If $input is the empty sequence, it is interpreted as the zero-length string.
+            
+            Unless the metacharacters ^ and $ are used as anchors, the string is considered \
+            to match the pattern if any substring matches the pattern. But if anchors are used, \
+            the anchors must match the start/end of the string (in string mode), or the \
+            start/end of a line (in multiline mode).
+            
+            Note:
+            
+            This is different from the behavior of patterns in [XML Schema Part 2: Datatypes \
+            Second Edition], where regular expressions are implicitly anchored.
+            
+            Please note that - in contrast - with the \
+            specification - this method allows zero or more items for the string argument.
+            
+            An error is raised [err:FORX0002] if the value of $pattern is invalid \
+            according to the rules described in section 7.6.1 Regular Expression Syntax.
+            
+            An error is raised [err:FORX0001] if the value of $flags is invalid \
+            according to the rules described in section 7.6.1 Regular Expression Syntax.""";
 
     public final static FunctionSignature[] signatures = functionSignatures(
             FS_MATCHES_NAME,
@@ -123,7 +133,7 @@ public final class FunMatches extends Function implements Optimizable, IndexUseR
     @Override
     public void setArguments(final List<Expression> arguments) throws XPathException {
         steps.clear();
-        final Expression path = arguments.get(0);
+        final Expression path = arguments.getFirst();
         steps.add(path);
 
         if (arguments.size() >= 2) {
@@ -148,7 +158,7 @@ public final class FunMatches extends Function implements Optimizable, IndexUseR
 
         final List<LocationStep> steps = BasicExpressionVisitor.findLocationSteps(path);
         if (!steps.isEmpty()) {
-            final LocationStep firstStep = steps.get(0);
+            final LocationStep firstStep = steps.getFirst();
             LocationStep lastStep = steps.getLast();
             if (firstStep != null && lastStep != null) {
                 final NodeTest test = lastStep.getTest();
@@ -289,6 +299,10 @@ public final class FunMatches extends Function implements Optimizable, IndexUseR
         newContextInfo.setParent(this);
         //  call analyze for each argument
         inPredicate = (newContextInfo.getFlags() & IN_PREDICATE) > 0;
+        // FunMatches implements Optimizable and depends on IN_PREDICATE
+        // being visible to the range/Lucene index optimizers via its
+        // arguments. Do not strip it here. The general Function.analyze()
+        // strips it for non-Optimizable functions (issue #4958).
         for (int i = 0; i < getArgumentCount(); i++) {
             getArgument(i).analyze(newContextInfo);
         }
@@ -427,13 +441,10 @@ public final class FunMatches extends Function implements Optimizable, IndexUseR
                     // restricted to that QName
                     contextQName = null;
                 }
-                if (!indexFound && contextQName == null) {
-                    // if there are some indexes defined on a qname,
-                    // we need to check them all
-                    if (iflags.hasIndexOnQNames()) {
-                        indexScan = true;
-                    }
-                    // else use range index defined on path by default
+                // if there are some indexes defined on a qname, we need to check them all;
+                // otherwise use range index defined on path by default
+                if (!indexFound && contextQName == null && iflags.hasIndexOnQNames()) {
+                    indexScan = true;
                 }
             } else {
                 result = evalFallback(nodes, pattern, flags, indexType);
@@ -512,21 +523,49 @@ public final class FunMatches extends Function implements Optimizable, IndexUseR
     }
 
 
-    private boolean matchXmlRegex(final String string, final String pattern, final String flags) throws XPathException {
+    private boolean matchXmlRegex(String string, final String pattern, final String flags) throws XPathException {
+        // XPath 4.0 lookaround syntax is not yet implemented in eXist's XQuery 3.1 runtime.
+        // When XQuery 4.0 lands (v2/xq4-core-functions), replace this guard with the
+        // translateXPath4Lookaround / Java-regex dispatch path.
+        if (hasXPath4Lookaround(pattern)) {
+            throw new XPathException(this, ErrorCodes.XPST0017,
+                    "XPath 4.0 lookaround syntax in regex patterns (e.g. (*positive_lookahead:...)) "
+                            + "is not yet implemented in this XQuery 3.1 build. Rewrite the regex without lookaround.");
+        }
+
+        // Pre-validate: reject constructs that are not valid in XPath 3.1 regex
+        // but that Saxon's XP30 mode accepts (Java/Perl extensions)
+        if (!hasLiteral(flags)) {
+            validateXPathRegex(this, pattern, false);
+        }
+
         try {
             List<String> warnings = new ArrayList<>(1);
             RegularExpression regex = context.getBroker().getBrokerPool()
                     .getSaxonConfiguration()
-                    .compileRegularExpression(pattern, flags, "XP30", warnings);
+                    .compileRegularExpression(StringView.of(pattern), flags, "XP31", warnings);
 
             for (final String warning : warnings) {
                 LOG.warn(warning);
             }
 
-            return regex.containsMatch(string);
+            return regex.containsMatch(StringView.of(string));
 
         } catch (final net.sf.saxon.trans.XPathException e) {
-            switch (e.getErrorCodeLocalPart()) {
+            // Saxon's XP31 regex translator rejects some valid patterns:
+            // \b/\B word boundaries, certain quantifier sequences, \p{Is<Block>} names, etc.
+            // Fall back to Java regex before giving up.
+            if ("FORX0002".equals(e.getErrorCodeQName().getLocalPart())) {
+                try {
+                    final String javaPattern = translateRegexp(
+                            this, pattern, flags.contains("x"), flags.contains("i"));
+                    int javaFlags = parseFlags(this, flags);
+                    return Pattern.compile(javaPattern, javaFlags).matcher(string).find();
+                } catch (final XPathException | PatternSyntaxException ignored) {
+                    // Java regex fallback also failed — throw original Saxon error below
+                }
+            }
+            switch (e.getErrorCodeQName().getLocalPart()) {
                 case "FORX0001" -> throw new XPathException(this, ErrorCodes.FORX0001, "Invalid regular expression: " + e.getMessage());
                 case "FORX0002" -> throw new XPathException(this, ErrorCodes.FORX0002, "Invalid regular expression: " + e.getMessage());
                 // no FORX0003 here since fn:matches is allowed to match an empty string

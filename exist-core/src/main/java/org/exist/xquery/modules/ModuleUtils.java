@@ -26,6 +26,7 @@ import java.io.IOException;
 import java.io.Reader;
 import java.io.StringReader;
 import java.math.BigInteger;
+import java.security.SecureRandom;
 import java.util.*;
 import java.util.Map.Entry;
 import java.util.concurrent.locks.ReadWriteLock;
@@ -61,7 +62,7 @@ import org.xml.sax.*;
 public class ModuleUtils {
     private static final Logger LOG = LogManager.getLogger(ModuleUtils.class);
     private static final ContextMapLocks contextMapLocks = new ContextMapLocks();
-    private static final Random random = new Random();
+    private static final Random random = new SecureRandom();
 
 	/**
 	 * Takes a String of XML and Creates an XML Node from it using SAX in the
@@ -172,11 +173,11 @@ public class ModuleUtils {
      * @throws IOException in case of error reading input source
      */
         public static NodeValue sourceToXML(XQueryContext context, Source src, final Expression expression) throws SAXException, IOException {
-            if(src instanceof SAXSource && ((SAXSource)src).getXMLReader() != null) {
+            if(src instanceof SAXSource source && source.getXMLReader() != null) {
                 //Handles the case where a SAXSource may already have an
                 //XMLReader allocated, for example EXPath httpclient
                 //where it wants to tidy html using TagSoup
-                return inputSourceToXML(context, (SAXSource)src, expression);
+                return inputSourceToXML(context, source, expression);
             } else {
                 final InputSource inputSource = SAXSource.sourceToInputSource(src);
                 if(inputSource == null){

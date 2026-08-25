@@ -214,23 +214,17 @@ public abstract class BinaryValue extends AtomicValue implements Closeable {
 
     @Override
     public boolean effectiveBooleanValue() throws XPathException {
-        throw new XPathException(getExpression(), "FORG0006: value of type " + Type.getTypeName(getType()) + " has no boolean value.");
+        throw new XPathException(getExpression(), ErrorCodes.FORG0006, "value of type " + Type.getTypeName(getType()) + " has no boolean value.");
     }
 
     //TODO ideally this should be moved out into serialization where we can stream the output from the buf/channel by calling streamTo()
     @Override
     public String getStringValue() throws XPathException {
         final UnsynchronizedByteArrayOutputStream baos = new UnsynchronizedByteArrayOutputStream();
-        try {
+        try (baos) {
             streamTo(baos);
         } catch (final IOException ex) {
             throw new XPathException(getExpression(), "Unable to encode string value: " + ex.getMessage(), ex);
-        } finally {
-            try {
-                baos.close();   //close the stream to ensure all data is flushed
-            } catch (final IOException ioe) {
-                LOG.error("Unable to close stream: {}", ioe.getMessage(), ioe);
-            }
         }
         return baos.toString(UTF_8);
     }

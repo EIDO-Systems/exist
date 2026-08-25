@@ -92,7 +92,7 @@ public class BackupRestoreSecurityPrincipalsTest {
      * that were owned by them are still correctly owner by them (and not some other user).
      */
     @Test
-    public void restoreConflictingUsername() throws PermissionDeniedException, EXistException, SAXException, IOException, XMLDBException, IllegalAccessException, ClassNotFoundException, InstantiationException {
+    public void restoreConflictingUsername() throws PermissionDeniedException, EXistException, SAXException, IOException, XMLDBException, ReflectiveOperationException {
         // creates a database with new users: 'frank(id=11)', 'joe(id=12)', and 'jack(id=13)'
         createInitialUsers(FRANK_USER, JOE_USER, JACK_USER);
 
@@ -105,10 +105,11 @@ public class BackupRestoreSecurityPrincipalsTest {
         //create new users: 'frank(id=11)' and 'jack(id=12)'
         createInitialUsers(FRANK_USER, JACK_USER);
 
-        final String accountQuery = "declare namespace c = 'http://exist-db.org/Configuration';\n" +
-            "for $account in //c:account\n" +
-            "return\n" +
-            "<user id='{$account/@id}' name='{$account/c:name}'/>";
+        final String accountQuery = """
+            declare namespace c = 'http://exist-db.org/Configuration';
+            for $account in //c:account
+            return
+            <user id='{$account/@id}' name='{$account/c:name}'/>""";
 
         final XPathQueryService xqs = server.getRoot().getService(XPathQueryService.class);
 

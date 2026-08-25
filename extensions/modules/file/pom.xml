@@ -28,7 +28,7 @@
     <parent>
         <groupId>org.exist-db</groupId>
         <artifactId>exist-parent</artifactId>
-        <version>7.0.0-SNAPSHOT</version>
+        <version>${revision}</version>
         <relativePath>../../../exist-parent</relativePath>
     </parent>
 
@@ -79,11 +79,6 @@
         </dependency>
 
         <dependency>
-            <groupId>xml-apis</groupId>
-            <artifactId>xml-apis</artifactId>
-        </dependency>
-
-        <dependency>
             <groupId>jakarta.xml.bind</groupId>
             <artifactId>jakarta.xml.bind-api</artifactId>
             <scope>test</scope>
@@ -114,6 +109,14 @@
         </dependency>
 
         <dependency>
+            <groupId>${project.groupId}</groupId>
+            <artifactId>exist-core</artifactId>
+            <version>${project.version}</version>
+            <type>test-jar</type>
+            <scope>test</scope>
+        </dependency>
+
+        <dependency>
             <groupId>junit</groupId>
             <artifactId>junit</artifactId>
             <scope>test</scope>
@@ -123,18 +126,6 @@
             <groupId>${project.groupId}</groupId>
             <artifactId>exist-jetty-config</artifactId>
             <version>${project.version}</version>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.httpcomponents</groupId>
-            <artifactId>httpcore</artifactId>
-            <scope>test</scope>
-        </dependency>
-
-        <dependency>
-            <groupId>org.apache.httpcomponents</groupId>
-            <artifactId>fluent-hc</artifactId>
             <scope>test</scope>
         </dependency>
 
@@ -151,13 +142,54 @@
             <testResource>
                 <directory>src/test/resources</directory>
                 <filtering>false</filtering>
+                <excludes>
+                    <exclude>**/*-fixture.xsl</exclude>
+                </excludes>
             </testResource>
             <testResource>
                 <directory>src/test/resources-filtered</directory>
                 <filtering>true</filtering>
+                <excludes>
+                    <exclude>*.xsl</exclude>
+                </excludes>
+            </testResource>
+            <testResource>
+                <directory>${project.build.directory}/generated-test-resources</directory>
+                <filtering>true</filtering>
             </testResource>
         </testResources>
         <plugins>
+            <!--
+                Generates this module's test controller-config.xml from the canonical
+                standalone-webapp/WEB-INF/controller-config.xml via the fixture stylesheet.
+                conf.xml codegen is handled by the root pom's conf-fixture-codegen profile.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>xml-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>controller-config-fixture-codegen</id>
+                        <phase>generate-test-resources</phase>
+                        <goals>
+                            <goal>transform</goal>
+                        </goals>
+                        <configuration>
+                            <forceCreation>true</forceCreation>
+                            <transformationSets>
+                                <transformationSet>
+                                    <dir>${maven.multiModuleProjectDirectory}/exist-jetty-config/src/main/resources/standalone-webapp/WEB-INF</dir>
+                                    <includes>
+                                        <include>controller-config.xml</include>
+                                    </includes>
+                                    <stylesheet>${project.basedir}/src/test/resources/standalone-webapp/WEB-INF/controller-config-fixture.xsl</stylesheet>
+                                    <outputDir>${project.build.directory}/generated-test-resources/standalone-webapp/WEB-INF</outputDir>
+                                </transformationSet>
+                            </transformationSets>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
@@ -197,7 +229,7 @@
                         <jetty.home>${project.basedir}/../../../exist-jetty-config/target/classes/org/exist/jetty</jetty.home>
                         <exist.configurationFile>${project.build.testOutputDirectory}/conf.xml</exist.configurationFile>
                         <exist.jetty.standalone.webapp.dir>${project.build.testOutputDirectory}/standalone-webapp</exist.jetty.standalone.webapp.dir>
-                        <log4j.configurationFile>${project.build.testOutputDirectory}/log4j2.xml</log4j.configurationFile>
+                        <log4j.configurationFile>${exist.log4j.testConfigurationFile}</log4j.configurationFile>
                     </systemPropertyVariables>
                 </configuration>
             </plugin>

@@ -37,6 +37,7 @@ import org.exist.xquery.XPathException;
 import org.exist.xquery.XQueryContext;
 import org.exist.xquery.value.*;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.Properties;
 
 
@@ -62,7 +63,7 @@ public class ScheduleFunctions extends BasicFunction
 
     public static final String              SCHEDULE_JAVA_PERIODIC_JOB   = "schedule-java-periodic-job";
 
-   private final static FunctionSignature scheduleJavaCronJobNoParam = new FunctionSignature(
+    private final static FunctionSignature scheduleJavaCronJobNoParam = new FunctionSignature(
 			new QName( SCHEDULE_JAVA_CRON_JOB, SchedulerModule.NAMESPACE_URI, SchedulerModule.PREFIX ),
 			"Schedules the Java Class named (the class must extend org.exist.scheduler.UserJavaJob) according " +
             "to the Cron expression. The job will be registered using the job name.",
@@ -312,7 +313,7 @@ public class ScheduleFunctions extends BasicFunction
 
                 //Check if the Class is a UserJob
                 Class<?> jobClass = Class.forName( resource );
-                job = jobClass.newInstance();
+                job = jobClass.getDeclaredConstructor().newInstance();
 
                 if( !( job instanceof UserJavaJob ) ) {
                     LOG.error("Cannot Schedule job. Class {} is not an instance of org.exist.scheduler.UserJavaJob", resource);
@@ -320,7 +321,8 @@ public class ScheduleFunctions extends BasicFunction
                 }
                 ( ( UserJavaJob )job ).setName( jobName );
             }
-            catch( ClassNotFoundException | InstantiationException | IllegalAccessException cnfe ) {
+            catch(ClassNotFoundException | InstantiationException | IllegalAccessException | NoSuchMethodException |
+                  InvocationTargetException cnfe ) {
                 LOG.error( cnfe );
                 return( BooleanValue.FALSE );
             }
@@ -352,26 +354,23 @@ public class ScheduleFunctions extends BasicFunction
         }
     }
 
-
     private void parseParameters( Node options, Properties properties ) throws XPathException
     {
-        if( ( options.getNodeType() == Node.ELEMENT_NODE ) && "parameters".equals(options.getLocalName()) ) {
-            Node child = options.getFirstChild();
-
-            while( child != null ) {
-
-                if( ( child.getNodeType() == Node.ELEMENT_NODE ) && "param".equals(child.getLocalName()) ) {
-                    Element elem  = ( Element )child;
-                    String  name  = elem.getAttribute( "name" );
-                    String  value = elem.getAttribute( "value" );
-
-                    if( ( name == null ) || ( value == null ) ) {
-                        throw( new XPathException( this, "Name or value attribute missing for stylesheet parameter" ) );
-                    }
-                    properties.setProperty( name, value );
+        if (options.getNodeType() != Node.ELEMENT_NODE || !"parameters".equals(options.getLocalName())) {
+            return;
+        }
+        Node child = options.getFirstChild();
+        while (child != null) {
+            if (child.getNodeType() == Node.ELEMENT_NODE && "param".equals(child.getLocalName()) ) {
+                Element elem  = (Element) child;
+                String  name  = elem.getAttribute("name");
+                String  value = elem.getAttribute( "value" );
+                if (name.isEmpty() || value.isEmpty()) {
+                    throw new XPathException(this, "Name or value attribute missing for stylesheet parameter");
                 }
-                child = child.getNextSibling();
+                properties.setProperty( name, value );
             }
+            child = child.getNextSibling();
         }
     }
 }

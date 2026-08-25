@@ -24,8 +24,8 @@ package org.exist.repo;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.exist.SystemProperties;
-import org.exist.start.Classpath;
-import org.exist.start.EXistClassLoader;
+import org.exist.start.classloader.Classpath;
+import org.exist.start.classloader.EXistClassLoader;
 import org.exist.storage.BrokerPool;
 import org.exist.storage.BrokerPoolService;
 import org.expath.pkg.repo.FileSystemStorage;
@@ -39,7 +39,6 @@ import java.io.IOException;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.Set;
@@ -170,7 +169,7 @@ public class ClasspathHelper implements BrokerPoolService {
                 try (final BufferedReader reader = Files.newBufferedReader(cp)) {
                     String line;
                     while ((line = reader.readLine()) != null) {
-                        Path p = Paths.get(line);
+                        Path p = Path.of(line);
                         if (!p.isAbsolute()) {
                             final FileSystemStorage.FileSystemResolver res = (FileSystemStorage.FileSystemResolver) pkg.getResolver();
                             p = res.resolveComponentAsFile(line);

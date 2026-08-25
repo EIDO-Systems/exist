@@ -31,7 +31,6 @@ import java.io.InputStream;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Optional;
@@ -198,7 +197,7 @@ public class GetThumbnailsFunction extends BasicFunction {
                     throw new XPathException(this, e.getMessage());
                 }
             } else {
-                thumbDir = Paths.get(thumbPath.toString());
+                thumbDir = Path.of(thumbPath.toString());
                 if (!Files.isDirectory(thumbDir))
                     try {
                         Files.createDirectories(thumbDir);
@@ -270,7 +269,7 @@ public class GetThumbnailsFunction extends BasicFunction {
                                 }
 
                                 if (isSaveToDataBase) {
-                                    os = new UnsynchronizedByteArrayOutputStream();
+                                    os = UnsynchronizedByteArrayOutputStream.builder().get();
                                     try {
                                         ImageIO.write(bImage, "jpg", os);
                                     } catch (Exception e) {
@@ -293,7 +292,7 @@ public class GetThumbnailsFunction extends BasicFunction {
                                                 .write(
                                                         bImage,
                                                         "jpg",
-                                                        Paths.get(thumbPath
+                                                        Path.of(thumbPath
                                                                 + "/" + prefix
                                                                 + docImage.getFileURI()).toFile());
                                     } catch (Exception e) {

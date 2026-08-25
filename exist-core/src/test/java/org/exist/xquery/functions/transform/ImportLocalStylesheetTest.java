@@ -28,7 +28,6 @@ import org.xmldb.api.base.XMLDBException;
 
 import java.net.URISyntaxException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 import static com.ibm.icu.impl.Assert.fail;
 import static org.junit.Assert.assertEquals;
@@ -53,7 +52,7 @@ public class ImportLocalStylesheetTest {
         final String packagePath = ImportLocalStylesheetTest.class.getPackage().getName().replace('.', separator);
 
         try {
-            return Paths.get(loader.getResource(packagePath + separator + "conf.xml").toURI());
+            return Path.of(loader.getResource(packagePath + separator + "conf.xml").toURI());
         } catch (final URISyntaxException e) {
             fail(e);
             return null;
@@ -116,7 +115,7 @@ public class ImportLocalStylesheetTest {
     }
 
     @Test
-    @Ignore
+    @Ignore("xmldb:exist: single-colon URI scheme not recognized")
     public void fromXmldbExistScheme() throws XMLDBException {
         final String xquery = getQuery("xmldb:exist:" + XSL_DB_LOCATION);
         final ResourceSet result = existXmldbEmbeddedServer.executeQuery(xquery);

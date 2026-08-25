@@ -38,17 +38,23 @@ import org.exist.util.DatabaseConfigurationException;
 import org.exist.util.FileUtils;
 import org.exist.xquery.*;
 import org.exist.xquery.value.AnyURIValue;
+import org.exist.xquery.value.Item;
 import org.exist.xquery.value.FunctionReference;
+import org.exist.xquery.value.NodeValue;
+import org.exist.xquery.value.Sequence;
 import org.junit.runner.Description;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 import org.junit.runner.notification.RunNotifier;
 import org.junit.runners.model.InitializationError;
 
+import javax.annotation.Nullable;
 import java.io.IOException;
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -73,11 +79,35 @@ public class XQueryTestRunner extends AbstractTestRunner {
      */
     public XQueryTestRunner(final Path path, final boolean parallel) throws InitializationError {
         super(path, parallel);
-        this.info = extractTestInfo(path);
+        this.info = discoverOrExtractTestInfo(path);
+    }
+
+    /**
+     * Obtain test metadata by discovery when possible, otherwise by compiling the module.
+     * When the DB is already started (e.g. by XSuite), try runDiscovery first so we run a single
+     * discovery XQuery instead of compiling the module twice. Fall back to extractTestInfo in two
+     * cases: (1) the DB is not started, or (2) the DB is started but runDiscovery returns null
+     * (e.g. discovery failed, empty result, or wrong XML shape).
+     *
+     * @param path the path to the XQuery file containing the XQSuite tests
+     * @return test info (from discovery or from compiling the module)
+     * @throws InitializationError if the runner could not be constructed
+     */
+    private static XQueryTestInfo discoverOrExtractTestInfo(final Path path) throws InitializationError {
+        if (XSuite.EXIST_EMBEDDED_SERVER_CLASS_INSTANCE != null) {
+            final BrokerPool pool = XSuite.EXIST_EMBEDDED_SERVER_CLASS_INSTANCE.getBrokerPool();
+            if (pool != null) {
+                final XQueryTestInfo discovered = runDiscovery(pool, path);
+                if (discovered != null) {
+                    return discovered;
+                }
+            }
+        }
+        return extractTestInfo(path);
     }
 
     private static Configuration getConfiguration() throws DatabaseConfigurationException {
-        final Optional<Path> home = Optional.ofNullable(System.getProperty("exist.home", System.getProperty("user.dir"))).map(Paths::get);
+        final Optional<Path> home = Optional.ofNullable(System.getProperty("exist.home", System.getProperty("user.dir"))).map(Path::of);
         final Path confFile = ConfigurationHelper.lookup("conf.xml", home);
 
         if (confFile.isAbsolute() && Files.exists(confFile)) {
@@ -172,12 +202,57 @@ public class XQueryTestRunner extends AbstractTestRunner {
         }
     }
 
+    /**
+     * Runs the discovery XQuery for the given path (single XQuery per file).
+     * Used so callers can avoid compiling the module twice (one discovery run vs full compile in extractTestInfo).
+     *
+     * @param brokerPool the broker pool (DB must be started)
+     * @param path the path to the XQuery file
+     * @return test info from the discovery result, or null if discovery fails or returns no usable result
+     */
+    @Nullable
+    static XQueryTestInfo runDiscovery(final BrokerPool brokerPool, final Path path) {
+        try {
+            final String pkgName = XQueryTestRunner.class.getPackage().getName().replace('.', '/');
+            final Source discoverySource = new ClassLoaderSource(pkgName + "/xquery-discovery.xq");
+            final List<java.util.function.Function<XQueryContext, Tuple2<String, Object>>> bindings = Collections.singletonList(
+                context -> new Tuple2<>("test-module-uri", new AnyURIValue(path.toAbsolutePath().toUri()))
+            );
+            final Sequence result = executeQuery(brokerPool, discoverySource, bindings, path.getParent());
+            if (result == null || result.getItemCount() < 1) {
+                return null;
+            }
+            final Item first = result.itemAt(0);
+            if (!(first instanceof NodeValue)) {
+                return null;
+            }
+            final Node root = ((NodeValue) first).getNode();
+            if (root.getNodeType() != Node.ELEMENT_NODE || !"discovery".equals(root.getLocalName())) {
+                return null;
+            }
+            final Element discovery = (Element) root;
+            final String namespace = discovery.getAttribute("namespace");
+            final String prefix = discovery.getAttribute("prefix");
+            final NodeList fList = discovery.getElementsByTagName("f");
+            final List<XQueryTestInfo.TestFunctionDef> testFunctions = new ArrayList<>(fList.getLength());
+            for (int i = 0; i < fList.getLength(); i++) {
+                final Element f = (Element) fList.item(i);
+                final String name = f.getAttribute("name");
+                final int arity = Integer.parseInt(f.getAttribute("arity"));
+                testFunctions.add(new XQueryTestInfo.TestFunctionDef(name, arity));
+            }
+            return new XQueryTestInfo(prefix, namespace, testFunctions);
+        } catch (final Exception e) {
+            return null;
+        }
+    }
+
     private String getSuiteName() {
-        if (info.getNamespace() == null) {
+        if (info.namespace() == null) {
             return path.getFileName().toString();
         }
 
-        return namespaceToPackageName(info.getNamespace());
+        return namespaceToPackageName(info.namespace());
     }
 
     private String namespaceToPackageName(final String namespace) {
@@ -220,8 +295,8 @@ public class XQueryTestRunner extends AbstractTestRunner {
     public Description getDescription() {
         final String suiteName = checkDescription(this, getSuiteName());
         final Description description = Description.createSuiteDescription(suiteName);
-        for (final XQueryTestInfo.TestFunctionDef testFunctionDef : info.getTestFunctions()) {
-            description.addChild(Description.createTestDescription(suiteName, checkDescription(testFunctionDef, testFunctionDef.getLocalName())));
+        for (final XQueryTestInfo.TestFunctionDef testFunctionDef : info.testFunctions()) {
+            description.addChild(Description.createTestDescription(suiteName, checkDescription(testFunctionDef, testFunctionDef.localName())));
         }
         return description;
     }
@@ -241,7 +316,7 @@ public class XQueryTestRunner extends AbstractTestRunner {
                     // set callback functions for notifying junit!
                     context -> new Tuple2<>("test-ignored-function", new FunctionReference(new FunctionCall(context, new ExtTestIgnoredFunction(context, suiteName, notifier)))),
                     context -> new Tuple2<>("test-started-function", new FunctionReference(new FunctionCall(context, new ExtTestStartedFunction(context, suiteName, notifier)))),
-                    context -> new Tuple2<>("test-failure-function", new FunctionReference(new FunctionCall(context, new ExtTestFailureFunction(context, suiteName, notifier)))),
+                    context -> new Tuple2<>("test-failure-function", new FunctionReference(new FunctionCall(context, new ExtTestFailureFunction(context, suiteName, notifier, path)))),
                     context -> new Tuple2<>("test-assumption-failed-function", new FunctionReference(new FunctionCall(context, new ExtTestAssumptionFailedFunction(context, suiteName, notifier)))),
                     context -> new Tuple2<>("test-error-function", new FunctionReference(new FunctionCall(context, new ExtTestErrorFunction(context, suiteName, notifier)))),
                     context -> new Tuple2<>("test-finished-function", new FunctionReference(new FunctionCall(context, new ExtTestFinishedFunction(context, suiteName, notifier))))
@@ -257,45 +332,7 @@ public class XQueryTestRunner extends AbstractTestRunner {
         }
     }
 
-    private static class XQueryTestInfo {
-        private final String prefix;
-        private final String namespace;
-        private final List<TestFunctionDef> testFunctions;
-
-        private XQueryTestInfo(final String prefix, final String namespace, final List<TestFunctionDef> testFunctions) {
-            this.prefix = prefix;
-            this.namespace = namespace;
-            this.testFunctions = testFunctions;
-        }
-
-        public String getPrefix() {
-            return prefix;
-        }
-
-        public String getNamespace() {
-            return namespace;
-        }
-
-        public List<TestFunctionDef> getTestFunctions() {
-            return testFunctions;
-        }
-
-        private static class TestFunctionDef {
-            private final String localName;
-            private final int arity;
-
-            private TestFunctionDef(final String localName, final int arity) {
-                this.localName = localName;
-                this.arity = arity;
-            }
-
-            public String getLocalName() {
-                return localName;
-            }
-
-            public int getArity() {
-                return arity;
-            }
-        }
+    record XQueryTestInfo(String prefix, String namespace, List<TestFunctionDef> testFunctions) {
+        record TestFunctionDef(String localName, int arity) { }
     }
 }

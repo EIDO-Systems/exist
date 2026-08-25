@@ -141,14 +141,8 @@ public class XMLTestRunner extends AbstractTestRunner {
     }
 
     private static @Nullable String getIdValue(final Node test) {
-        String id = ((Element)test).getAttribute("id");
-        if (id != null) {
-            id = id.trim();
-            if (!id.isEmpty()) {
-                return id;
-            }
-        }
-        return null;
+        final String id = ((Element)test).getAttribute("id");
+        return id.isBlank() ? null : id;
     }
 
     private static @Nullable String getTaskText(final Node test) {
@@ -170,14 +164,14 @@ public class XMLTestRunner extends AbstractTestRunner {
     }
 
     private String getSuiteName() {
-        return "xmlts." + info.getName();
+        return "xmlts." + info.name();
     }
 
     @Override
     public Description getDescription() {
         final String suiteName = checkDescription(info, getSuiteName());
         final Description description = Description.createSuiteDescription(suiteName);
-        for (final String childName : info.getChildNames()) {
+        for (final String childName : info.childNames()) {
             description.addChild(Description.createTestDescription(suiteName, checkDescription(info, childName)));
         }
         return description;
@@ -196,7 +190,7 @@ public class XMLTestRunner extends AbstractTestRunner {
                 // set callback functions for notifying junit!
                 context -> new Tuple2<>("test-ignored-function", new FunctionReference(new FunctionCall(context, new ExtTestIgnoredFunction(context, getSuiteName(), notifier)))),
                 context -> new Tuple2<>("test-started-function", new FunctionReference(new FunctionCall(context, new ExtTestStartedFunction(context, getSuiteName(), notifier)))),
-                context -> new Tuple2<>("test-failure-function", new FunctionReference(new FunctionCall(context, new ExtTestFailureFunction(context, getSuiteName(), notifier)))),
+                context -> new Tuple2<>("test-failure-function", new FunctionReference(new FunctionCall(context, new ExtTestFailureFunction(context, getSuiteName(), notifier, path)))),
                 context -> new Tuple2<>("test-assumption-failed-function", new FunctionReference(new FunctionCall(context, new ExtTestAssumptionFailedFunction(context, getSuiteName(), notifier)))),
                 context -> new Tuple2<>("test-error-function", new FunctionReference(new FunctionCall(context, new ExtTestErrorFunction(context, getSuiteName(), notifier)))),
                 context -> new Tuple2<>("test-finished-function", new FunctionReference(new FunctionCall(context, new ExtTestFinishedFunction(context, getSuiteName(), notifier))))
@@ -231,29 +225,6 @@ public class XMLTestRunner extends AbstractTestRunner {
         return adapter.getDocument();
     }
 
-    private static class XMLTestInfo {
-        @Nullable private final String name;
-        @Nullable private final String description;
-        private final List<String> childNames;
-
-        private XMLTestInfo(@Nullable final String name, @Nullable final String description, final List<String> childNames) {
-            this.name = name;
-            this.description = description;
-            this.childNames = childNames;
-        }
-
-        @Nullable
-        public String getName() {
-            return name;
-        }
-
-        @Nullable
-        public String getDescription() {
-            return description;
-        }
-
-        public List<String> getChildNames() {
-            return childNames;
-        }
+    private record XMLTestInfo(@Nullable String name, @Nullable String description, List<String> childNames) {
     }
 }

@@ -22,7 +22,6 @@
 package org.exist.xquery.modules.mail;
 
 import org.apache.commons.codec.binary.Base64;
-import org.apache.commons.lang3.StringUtils;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 import org.exist.Version;
@@ -225,25 +224,26 @@ public class SendEmailFunction extends BasicFunction {
         allrecipients.addAll(mail.getCC());
         allrecipients.addAll(mail.getBCC());
 
-        //Get a string of all recipients email addresses
-        final StringBuilder recipients = new StringBuilder();
+        // Normalize all recipients to plain email addresses for sendmail arguments
+        final List<String> normalizedRecipients = new ArrayList<>(allrecipients.size());
 
         for (final String recipient : allrecipients) {
-            recipients.append(" ");
-
             //Check format of to address does it include a name as well as the email address?
             if (recipient.contains("<")) {
                 //yes, just add the email address
-                recipients.append(recipient, recipient.indexOf("<") + 1, recipient.indexOf(">"));
+                normalizedRecipients.add(recipient.substring(recipient.indexOf("<") + 1, recipient.indexOf(">")));
             } else {
                 //add the email address
-                recipients.append(recipient);
+                normalizedRecipients.add(recipient);
             }
         }
 
         try {
             //Create a sendmail Process
-            final Process p = Runtime.getRuntime().exec("/usr/sbin/sendmail" + recipients);
+            final List<String> command = new ArrayList<>(normalizedRecipients.size() + 1);
+            command.add("/usr/sbin/sendmail");
+            command.addAll(normalizedRecipients);
+            final Process p = new ProcessBuilder(command).start();
 
             //Get a Buffered Print Writer to the Processes stdOut
             try (final PrintWriter out = new PrintWriter(new OutputStreamWriter(p.getOutputStream(), charset))) {
@@ -832,19 +832,18 @@ public class SendEmailFunction extends BasicFunction {
                                     // Now, time to store it
                                     if (content != null && contentType != null && !contentType.isEmpty()) {
                                         String charset = elementBodyPart.getAttribute("charset");
+                                        if (charset.isEmpty()) {
+                                            charset = "UTF-8";
+                                        }
+
                                         String encoding = elementBodyPart.getAttribute("encoding");
+                                        if (encoding.isEmpty()) {
+                                            encoding = "quoted-printable";
+                                        }
 
                                         if (body != null && multibody == null) {
                                             multibody = new MimeMultipart("alternative");
                                             multibody.addBodyPart(body);
-                                        }
-
-                                        if (StringUtils.isEmpty(charset)) {
-                                            charset = "UTF-8";
-                                        }
-
-                                        if (StringUtils.isEmpty(encoding)) {
-                                            encoding = "quoted-printable";
                                         }
 
                                         if (body == null) {
@@ -855,9 +854,7 @@ public class SendEmailFunction extends BasicFunction {
                                         }
                                         body = new MimeBodyPart();
                                         body.setText(content, charset, contentType);
-                                        if (encoding != null) {
-                                            body.setHeader("Content-Transfer-Encoding", encoding);
-                                        }
+                                        body.setHeader("Content-Transfer-Encoding", encoding);
                                         if (multibody != null) {
                                             multibody.addBodyPart(body);
                                         }

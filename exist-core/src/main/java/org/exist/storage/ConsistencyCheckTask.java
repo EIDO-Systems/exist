@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.List;
 import java.util.Properties;
 
@@ -43,8 +42,6 @@ import org.exist.storage.txn.Txn;
 import org.exist.util.Configuration;
 import org.exist.xquery.Expression;
 import org.exist.xquery.TerminatedException;
-
-import static java.nio.charset.StandardCharsets.UTF_8;
 
 public class ConsistencyCheckTask implements SystemTask {
 
@@ -86,7 +83,7 @@ public class ConsistencyCheckTask implements SystemTask {
     @Override
     public void configure(final Configuration config, final Properties properties) throws EXistException {
         exportDir = properties.getProperty(OUTPUT_PROP_NAME, "export");
-        Path dir = Paths.get(exportDir);
+        Path dir = Path.of(exportDir);
         if (!dir.isAbsolute()) {
             dir = ((Path) config.getProperty(BrokerPool.PROPERTY_DATA_DIR)).resolve(exportDir);
         }
@@ -228,7 +225,7 @@ public class ConsistencyCheckTask implements SystemTask {
     private PrintWriter openLog() throws EXistException {
         try {
             final Path file = SystemExport.getUniqueFile("report", ".log", exportDir);
-            return new PrintWriter(Files.newBufferedWriter(file, UTF_8));
+            return new PrintWriter(Files.newBufferedWriter(file));
         } catch (final IOException e) {
             throw new EXistException("ERROR: failed to create report file in " + exportDir, e);
         }

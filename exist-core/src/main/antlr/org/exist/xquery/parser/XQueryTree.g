@@ -126,6 +126,53 @@ options {
         throw new XPathException(ast, message);
     }
 
+    /**
+     * Pre-scan a direct element constructor's AST for namespace declaration
+     * attributes (xmlns and xmlns:prefix) and push them onto the static
+     * context's in-scope namespaces before the rest of the constructor's
+     * children (attribute values and content) are walked.
+     *
+     * Per XQuery 3.1 section 3.9.1, namespace declarations on a direct
+     * element constructor are added to the statically known namespaces
+     * in the static context of the constructor, including its content
+     * and attribute values. Without this pre-scan, prefixed QNames inside
+     * enclosed expressions in attribute values or element content (e.g.
+     * "{1 cast as p:string}") fail QName resolution with XPST0081.
+     *
+     * The caller is responsible for having already issued a matching
+     * pushInScopeNamespaces() so that these declarations are popped at
+     * end of element.
+     */
+    private void prescanElementNamespaceDecls(XQueryAST elementAST) throws XPathException {
+        XQueryAST child = (XQueryAST) elementAST.getFirstChild();
+        while (child != null) {
+            if (child.getType() == ATTRIBUTE) {
+                final String attrName = child.getText();
+                String nsPrefix = null;
+                if (XMLConstants.XMLNS_ATTRIBUTE.equals(attrName)) {
+                    nsPrefix = "";
+                } else if (attrName != null && attrName.startsWith(XMLConstants.XMLNS_ATTRIBUTE + ":")) {
+                    nsPrefix = attrName.substring(XMLConstants.XMLNS_ATTRIBUTE.length() + 1);
+                }
+                if (nsPrefix != null) {
+                    final StringBuilder value = new StringBuilder();
+                    XQueryAST contentChild = (XQueryAST) child.getFirstChild();
+                    while (contentChild != null) {
+                        if (contentChild.getType() == ATTRIBUTE_CONTENT) {
+                            value.append(StringValue.expand(contentChild.getText()));
+                        }
+                        // LCURLY (enclosed expr) inside an xmlns value is a
+                        // separate spec violation; the existing post-walk
+                        // logic raises the appropriate error.
+                        contentChild = (XQueryAST) contentChild.getNextSibling();
+                    }
+                    staticContext.declareInScopeNamespace(nsPrefix, value.toString());
+                }
+            }
+            child = (XQueryAST) child.getNextSibling();
+        }
+    }
+
     private static class ForLetClause {
         XQueryAST ast;
         QName varName;
@@ -156,6 +203,32 @@ options {
                      || ns.equals(Namespaces.XPATH_FUNCTIONS_MATH_NS)
                      || ns.equals(Namespaces.XQUERY_OPTIONS_NS));
         }
+    }
+
+    private static void checkInlineFunctionAnnotations(List annots, AST astNode) throws XPathException {
+        // XQuery 3.1 section 3.1.7.1: an inline function expression must not be
+        // annotated as %public or %private. The reserved annotation names live in
+        // the default function namespace; we also accept the bare local part to
+        // remain robust against differences in default function namespace
+        // resolution between top-level modules and util:eval scopes.
+        for (Object o : annots) {
+            List la = (List) o;
+            QName qn = (QName) la.get(0);
+            final String local = qn.getLocalPart();
+            if (("public".equals(local) || "private".equals(local))
+                    && annotationInDefaultFunctionNamespace(qn)) {
+                throw new XPathException(astNode.getLine(), astNode.getColumn(),
+                    ErrorCodes.XQST0125,
+                    "Inline function expressions must not be annotated as %" + local + ".");
+            }
+        }
+    }
+
+    private static boolean annotationInDefaultFunctionNamespace(QName qn) {
+        final String ns = qn.getNamespaceURI();
+        return ns == null
+            || ns.isEmpty()
+            || Namespaces.XPATH_FUNCTIONS_NS.equals(ns);
     }
 
     private static void processAnnotations(List annots, FunctionSignature signature) {
@@ -209,6 +282,117 @@ options {
             distinctVariableNames.add(variableName);
             return variableName;
         }
+    }
+
+    private static String dfRequireSingleChar(final AST node, final String propName, final String value) throws XPathException {
+        if (value.codePointCount(0, value.length()) != 1) {
+            throw new XPathException(node.getLine(), node.getColumn(), ErrorCodes.XQST0098,
+                "The value of decimal-format property '" + propName + "' must be a single character, but got: \"" + value + "\"");
+        }
+        return value;
+    }
+
+    private static void dfValidateZeroDigit(final AST node, final String value) throws XPathException {
+        final int cp = value.codePointAt(0);
+        if (Character.getType(cp) != Character.DECIMAL_DIGIT_NUMBER || Character.getNumericValue(cp) != 0) {
+            throw new XPathException(node.getLine(), node.getColumn(), ErrorCodes.XQST0098,
+                "The value of decimal-format property 'zero-digit' must be a Unicode digit with numeric value zero, but got: \"" + value + "\"");
+        }
+    }
+
+    private static void dfValidateDistinctPictureChars(final AST node, final DecimalFormat df) throws XPathException {
+        // The 8 single-character picture-string properties must all have distinct values
+        final int[] chars = { df.decimalSeparator, df.groupingSeparator, df.percent, df.perMille,
+                              df.zeroDigit, df.digit, df.patternSeparator, df.exponentSeparator };
+        final String[] names = { "decimal-separator", "grouping-separator", "percent", "per-mille",
+                                 "zero-digit", "digit", "pattern-separator", "exponent-separator" };
+        for (int i = 0; i < chars.length; i++) {
+            for (int j = i + 1; j < chars.length; j++) {
+                if (chars[i] == chars[j]) {
+                    throw new XPathException(node.getLine(), node.getColumn(), ErrorCodes.XQST0098,
+                        "Decimal-format properties '" + names[i] + "' and '" + names[j] +
+                        "' must have distinct values, but both are: '" + new String(Character.toChars(chars[i])) + "'");
+                }
+            }
+        }
+    }
+
+    private DecimalFormat processDecimalFormatProperties(final AST parentNode) throws XPathException {
+        // Start with UNNAMED defaults
+        int decimalSeparator = DecimalFormat.UNNAMED.decimalSeparator;
+        int exponentSeparator = DecimalFormat.UNNAMED.exponentSeparator;
+        int groupingSeparator = DecimalFormat.UNNAMED.groupingSeparator;
+        int percent = DecimalFormat.UNNAMED.percent;
+        int perMille = DecimalFormat.UNNAMED.perMille;
+        int zeroDigit = DecimalFormat.UNNAMED.zeroDigit;
+        int digit = DecimalFormat.UNNAMED.digit;
+        int patternSeparator = DecimalFormat.UNNAMED.patternSeparator;
+        String infinity = DecimalFormat.UNNAMED.infinity;
+        String nan = DecimalFormat.UNNAMED.NaN;
+        int minusSign = DecimalFormat.UNNAMED.minusSign;
+
+        AST child = parentNode.getFirstChild();
+        while (child != null) {
+            final String propName = child.getText();
+            final AST valueNode = child.getFirstChild();
+            if (valueNode == null) {
+                child = child.getNextSibling();
+                continue;
+            }
+            final String value = valueNode.getText();
+
+            switch (propName) {
+                case "decimal-separator" -> {
+                    dfRequireSingleChar(child, propName, value);
+                    decimalSeparator = value.codePointAt(0);
+                }
+                case "grouping-separator" -> {
+                    dfRequireSingleChar(child, propName, value);
+                    groupingSeparator = value.codePointAt(0);
+                }
+                case "infinity" -> infinity = value;
+                case "minus-sign" -> {
+                    dfRequireSingleChar(child, propName, value);
+                    minusSign = value.codePointAt(0);
+                }
+                case "NaN" -> nan = value;
+                case "percent" -> {
+                    dfRequireSingleChar(child, propName, value);
+                    percent = value.codePointAt(0);
+                }
+                case "per-mille" -> {
+                    dfRequireSingleChar(child, propName, value);
+                    perMille = value.codePointAt(0);
+                }
+                case "zero-digit" -> {
+                    dfRequireSingleChar(child, propName, value);
+                    dfValidateZeroDigit(child, value);
+                    zeroDigit = value.codePointAt(0);
+                }
+                case "digit" -> {
+                    dfRequireSingleChar(child, propName, value);
+                    digit = value.codePointAt(0);
+                }
+                case "pattern-separator" -> {
+                    dfRequireSingleChar(child, propName, value);
+                    patternSeparator = value.codePointAt(0);
+                }
+                case "exponent-separator" -> {
+                    dfRequireSingleChar(child, propName, value);
+                    exponentSeparator = value.codePointAt(0);
+                }
+                default -> { }
+            }
+            child = child.getNextSibling();
+        }
+
+        final DecimalFormat df = new DecimalFormat(
+            decimalSeparator, exponentSeparator, groupingSeparator,
+            percent, perMille, zeroDigit, digit,
+            patternSeparator, infinity, nan, minusSign
+        );
+        dfValidateDistinctPictureChars(parentNode, df);
+        return df;
     }
 }
 
@@ -302,6 +486,10 @@ throws PermissionDeniedException, EXistException, XPathException
    #(
             m:MODULE_DECL uri:STRING_LITERAL
             {
+                if (uri.getText() == null || uri.getText().isEmpty()) {
+                    throw new XPathException(uri.getLine(), uri.getColumn(), ErrorCodes.XQST0088,
+                        "The literal that specifies the target namespace in a module declaration must not be of zero length.");
+                }
                 if (myModule == null)
                     myModule = new ExternalModuleImpl(uri.getText(), m.getText());
                 else {
@@ -337,6 +525,8 @@ throws PermissionDeniedException, EXistException, XPathException
   boolean baseuri = false;
   boolean ordering = false;
   boolean construction = false;
+  Set declaredDecimalFormats = new HashSet();
+  boolean defaultDecimalFormatDeclared = false;
 
 }:
     (
@@ -387,7 +577,7 @@ throws PermissionDeniedException, EXistException, XPathException
             )
             {
                 if (orderempty)
-                    throw new XPathException(prolog_AST_in, ErrorCodes.XQST0065, "Ordering mode already declared.");
+                    throw new XPathException(prolog_AST_in, ErrorCodes.XQST0069, "Empty order declaration already declared.");
                 orderempty = true;
             }
         )
@@ -454,16 +644,19 @@ throws PermissionDeniedException, EXistException, XPathException
             {
                 // ignored
                 if (construction)
-                    throw new XPathException(prolog_AST_in, ErrorCodes.XQST0069, "Construction already declared.");
+                    throw new XPathException(prolog_AST_in, ErrorCodes.XQST0067, "Construction already declared.");
                 construction = true;
             }
         )
         |
         #(
             DEF_NAMESPACE_DECL defu:STRING_LITERAL
-            { // Use setDefaultElementNamespace()
+            {
+                // Check for duplicate default element namespace first (XQST0066)
+                context.setDefaultElementNamespace(defu.getText(), null);
+                staticContext.setDefaultElementNamespace(defu.getText(), null);
                 context.declareNamespace("", defu.getText());
-                staticContext.declareNamespace("",defu.getText());
+                staticContext.declareNamespace("", defu.getText());
             }
         )
         |
@@ -555,6 +748,7 @@ throws PermissionDeniedException, EXistException, XPathException
                     final VariableDeclaration decl = new VariableDeclaration(context, qn, defaultValue);
                     decl.setSequenceType(type);
                     decl.setASTNode(ext);
+                    decl.setExternal(true);
                     if (external == null) {
                         path.add(decl);
                     }
@@ -630,6 +824,35 @@ throws PermissionDeniedException, EXistException, XPathException
                     }
                 }
             )
+        )
+        |
+        #(
+            dfDecl:DECIMAL_FORMAT_DECL (.)*
+            {
+                final QName dfQName;
+                try {
+                    dfQName = QName.parse(staticContext, dfDecl.getText(), null);
+                } catch (final IllegalQNameException iqe) {
+                    throw new XPathException(dfDecl.getLine(), dfDecl.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix in decimal format name: " + dfDecl.getText());
+                }
+                final String dfKey = dfQName.getNamespaceURI() + ":" + dfQName.getLocalPart();
+                if (declaredDecimalFormats.contains(dfKey))
+                    throw new XPathException(dfDecl, ErrorCodes.XQST0097, "Duplicate decimal format declaration: " + dfDecl.getText());
+                declaredDecimalFormats.add(dfKey);
+                final DecimalFormat df = processDecimalFormatProperties(dfDecl);
+                context.setStaticDecimalFormat(dfQName, df);
+            }
+        )
+        |
+        #(
+            defDfDecl:DEF_DECIMAL_FORMAT_DECL (.)*
+            {
+                if (defaultDecimalFormatDeclared)
+                    throw new XPathException(defDfDecl, ErrorCodes.XQST0097, "Duplicate default decimal format declaration.");
+                defaultDecimalFormatDeclared = true;
+                final DecimalFormat df = processDecimalFormatProperties(defDfDecl);
+                context.setDefaultStaticDecimalFormat(df);
+            }
         )
         |
         functionDecl [path]
@@ -734,25 +957,15 @@ throws PermissionDeniedException, EXistException, XPathException
         targetURI:STRING_LITERAL
         ( uriList [uriList] )?
         {
-            if ("".equals(targetURI.getText()) && nsPrefix != null) {
-                    throw new XPathException(s, ErrorCodes.XQST0057, "A schema without target namespace (zero-length string target namespace) may not bind a namespace prefix: " + nsPrefix);
-            }
             if (nsPrefix != null) {
                 if (declaredNamespaces.get(nsPrefix) != null)
                     throw new XPathException(s, ErrorCodes.XQST0033, "Prolog contains " +
                                              "multiple declarations for namespace prefix: " + nsPrefix);
                 declaredNamespaces.put(nsPrefix, targetURI.getText());
             }
-            try {
-                context.declareNamespace(nsPrefix, targetURI.getText());
-                staticContext.declareNamespace(nsPrefix, targetURI.getText());
-                // We currently do nothing with eventual location hints. /ljo
-            } catch(XPathException xpe) {
-                xpe.prependMessage("err:XQST0059: Error found while loading schema " + nsPrefix + ": ");
-                throw xpe;
+            if (s != null) {
+                throw new XPathException(s, ErrorCodes.XQST0009, "The eXist-db XQuery implementation does not support the Schema Import Feature.");
             }
-            // We ought to do this for now until Dannes can say it works. /ljo
-            //throw new XPathException(s, ErrorCodes.XQST0009, "The eXist-db XQuery implementation does not support the Schema Import Feature quite yet.");
         }
     )
     ;
@@ -903,6 +1116,9 @@ throws PermissionDeniedException, EXistException, XPathException
         (
             annotations [annots]
             {
+                // XQuery 3.1 section 4.18 / section 3.1.7.1: an inline function expression
+                // must not be annotated as %public or %private (XQST0125).
+                checkInlineFunctionAnnotations(annots, name);
                 processAnnotations(annots, signature);
             }
         )?
@@ -1082,8 +1298,6 @@ throws XPathException
                 STAR
                 |
                 (
-                    // TODO: parameter types are collected, but not used!
-                    // Change SequenceType accordingly.
                     { List<SequenceType> paramTypes = new ArrayList<SequenceType>(5); }
                     (
                         { SequenceType paramType = new SequenceType(); }
@@ -1092,6 +1306,10 @@ throws XPathException
                     )*
                     { SequenceType returnType = new SequenceType(); }
                     "as" sequenceType [returnType]
+                    {
+                        type.setFunctionParamTypes(paramTypes.toArray(new SequenceType[0]));
+                        type.setFunctionReturnType(returnType);
+                    }
                 )
             )
         )
@@ -1102,14 +1320,15 @@ throws XPathException
                 STAR
                 |
                 (
-                    // TODO: parameter types are collected, but not used!
-                    // Change SequenceType accordingly.
                     { List<SequenceType> paramTypes = new ArrayList<SequenceType>(5); }
                     (
                         { SequenceType paramType = new SequenceType(); }
                         sequenceType [paramType]
                         { paramTypes.add(paramType); }
                     )*
+                    {
+                        type.setFunctionParamTypes(paramTypes.toArray(new SequenceType[0]));
+                    }
                 )
             )
         )
@@ -1120,14 +1339,15 @@ throws XPathException
                 STAR
                 |
                 (
-                    // TODO: parameter types are collected, but not used!
-                    // Change SequenceType accordingly.
                     { List<SequenceType> paramTypes = new ArrayList<SequenceType>(5); }
                     (
                         { SequenceType paramType = new SequenceType(); }
                         sequenceType [paramType]
                         { paramTypes.add(paramType); }
                     )*
+                    {
+                        type.setFunctionParamTypes(paramTypes.toArray(new SequenceType[0]));
+                    }
                 )
             )
         )
@@ -2338,6 +2558,7 @@ throws PermissionDeniedException, EXistException, XPathException
     #(
         ABSOLUTE_SLASH
         {
+            path.setHasSlash();
             RootNode root= new RootNode(context);
             path.add(root);
         }
@@ -2348,6 +2569,7 @@ throws PermissionDeniedException, EXistException, XPathException
     #(
         ABSOLUTE_DSLASH
         {
+            path.setHasSlash();
             RootNode root= new RootNode(context);
             path.add(root);
         }
@@ -2360,7 +2582,13 @@ throws PermissionDeniedException, EXistException, XPathException
                         (s.getTest().getType() == Type.ATTRIBUTE && s.getAxis() == Constants.CHILD_AXIS))
                         // combines descendant-or-self::node()/attribute:*
                         s.setAxis(Constants.DESCENDANT_ATTRIBUTE_AXIS);
-                    else {
+                    else if (s.getAxis() <= Constants.PRECEDING_SIBLING_AXIS) {
+                        // Reverse axis: insert explicit descendant-or-self::node() step
+                        LocationStep descStep = new LocationStep(context, Constants.DESCENDANT_SELF_AXIS, new TypeTest(Type.NODE));
+                        descStep.setAbbreviated(true);
+                        path.replaceLastExpression(descStep);
+                        path.add(step);
+                    } else {
                         s.setAxis(Constants.DESCENDANT_SELF_AXIS);
                         s.setAbbreviated(true);
                     }
@@ -2387,9 +2615,8 @@ throws PermissionDeniedException, EXistException, XPathException
         step=expr [start]
         step=expr [end]
         {
-            RangeExpression range= new RangeExpression(context);
+            RangeExpression range = new RangeExpression(context, start, end);
             range.setASTNode(expr_AST_in);
-            range.setArguments(args);
             path.addPath(range);
             step = range;
         }
@@ -2948,6 +3175,9 @@ throws PermissionDeniedException, EXistException, XPathException
     |
     #(
         SLASH step=expr [path]
+        {
+            path.setHasSlash();
+        }
         (
             rightStep=expr [path]
             {
@@ -2972,6 +3202,9 @@ throws PermissionDeniedException, EXistException, XPathException
     |
     #(
         DSLASH step=expr [path]
+        {
+            path.setHasSlash();
+        }
         (
             rightStep=expr [path]
             {
@@ -2984,19 +3217,34 @@ throws PermissionDeniedException, EXistException, XPathException
                         rs.setAxis(Constants.DESCENDANT_AXIS);
                     } else if (rs.getAxis() == Constants.SELF_AXIS) {
                         rs.setAxis(Constants.DESCENDANT_SELF_AXIS);
+                    } else if (rs.getAxis() <= Constants.PRECEDING_SIBLING_AXIS) {
+                        // Reverse axis: cannot merge with descendant-or-self,
+                        // insert explicit descendant-or-self::node() step before the reverse axis step
+                        LocationStep descStep = new LocationStep(context, Constants.DESCENDANT_SELF_AXIS, new TypeTest(Type.NODE));
+                        descStep.setAbbreviated(true);
+                        path.replaceLastExpression(descStep);
+                        path.add(rightStep);
                     } else {
                         rs.setAxis(Constants.DESCENDANT_SELF_AXIS);
                         rs.setAbbreviated(true);
                     }
 
-                } else {
+                } else if (rightStep instanceof VariableReference) {
                     rightStep.setPrimaryAxis(Constants.DESCENDANT_SELF_AXIS);
-                    if(rightStep instanceof VariableReference) {
-                        rightStep = new SimpleStep(context, Constants.DESCENDANT_SELF_AXIS, rightStep);
-                        path.replaceLastExpression(rightStep);
-                    } else if (rightStep instanceof FilteredExpression)
-                        ((FilteredExpression)rightStep).setAbbreviated(true);
-
+                    rightStep = new SimpleStep(context, Constants.DESCENDANT_SELF_AXIS, rightStep);
+                    path.replaceLastExpression(rightStep);
+                } else if (rightStep instanceof FilteredExpression) {
+                    rightStep.setPrimaryAxis(Constants.DESCENDANT_SELF_AXIS);
+                    ((FilteredExpression)rightStep).setAbbreviated(true);
+                } else {
+                    // For other non-LocationStep expressions (e.g., PathExpr wrapping
+                    // parenthesized expressions like //(@x) or //(a | b)), insert an
+                    // explicit descendant-or-self::node() step. We must NOT call
+                    // setPrimaryAxis here because it would corrupt inner axes (e.g.,
+                    // overwriting an attribute axis in //(@x)).
+                    LocationStep descStep = new LocationStep(context, Constants.DESCENDANT_SELF_AXIS, new TypeTest(Type.NODE));
+                    path.replaceLastExpression(descStep);
+                    path.add(rightStep);
                 }
             }
         )?
@@ -3259,16 +3507,7 @@ throws PermissionDeniedException, EXistException, XPathException
         )*
     )
     {
-        step = FunctionFactory.createFunction(context, fn, path, params);
-        if (isPartial) {
-            if (!(step instanceof FunctionCall)) {
-                if (step instanceof CastExpression) {
-                    step = ((CastExpression)step).toFunction();
-                }
-                step = FunctionFactory.wrap(context, (Function)step);
-            }
-            step = new PartialFunctionApplication(context, (FunctionCall) step);
-        }
+        step = FunctionFactory.createFunctionCall(context, fn, path, params, isPartial);
     }
     ;
 
@@ -3591,7 +3830,9 @@ throws PermissionDeniedException, EXistException, XPathException
                     || ("".equals(qname.getNamespaceURI()) && qname.getLocalPart().equals(XMLConstants.XMLNS_ATTRIBUTE)))
                     throw new XPathException(constructor_AST_in, ErrorCodes.XQDY0044, "The node-name property of the node constructed by a computed attribute constructor is in the namespace http://www.w3.org/2000/xmlns/ (corresponding to namespace prefix xmlns), or is in no namespace and has local name xmlns.");
             } catch (final IllegalQNameException iqe) {
-                throw new XPathException(qna.getLine(), qna.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + qna.getText());
+                // Computed attribute constructors evaluate the name dynamically (XQuery 3.1 §3.9.3.1).
+                // An undeclared prefix is therefore a dynamic error XQDY0074, not the static XPST0081.
+                throw new XPathException(qna.getLine(), qna.getColumn(), ErrorCodes.XQDY0074, "'" + qna.getText() + "' is not a valid attribute name");
             }
         }
         #( LCURLY
@@ -3634,6 +3875,11 @@ throws PermissionDeniedException, EXistException, XPathException
             c.setASTNode(e);
             step= c;
             staticContext.pushInScopeNamespaces();
+            // XQuery 3.1 section 3.9.1: namespace declaration attributes on a
+            // direct element constructor extend the static context for the
+            // constructor's content and attribute values. Push them now so
+            // that prefixed QNames inside enclosed expressions resolve.
+            prescanElementNamespaceDecls(e);
         }
         (
             #(
@@ -3718,7 +3964,7 @@ throws PermissionDeniedException, EXistException, XPathException
             comment.setASTNode(t);
             step= comment;
         }
-        contentExpr=expr [elementContent]
+        (contentExpr=expr [elementContent])?
     )
     |
     #(
@@ -3730,7 +3976,7 @@ throws PermissionDeniedException, EXistException, XPathException
             doc.setASTNode(d);
             step= doc;
         }
-        contentExpr=expr [elementContent]
+        (contentExpr=expr [elementContent])?
     )
     |
     #(
@@ -3802,6 +4048,8 @@ throws PermissionDeniedException, EXistException, XPathException
         )
         { List<Expression> params = new ArrayList<Expression>(5); }
         (
+            QUESTION { params.add(new Function.Placeholder(context)); }
+            |
             {
                 PathExpr pathExpr = new PathExpr(context);
                 pathExpr.setASTNode(arrowOp_AST_in);
@@ -3846,7 +4094,7 @@ throws PermissionDeniedException, EXistException, XPathException
                 path.add(castExpr);
                 step = castExpr;
             } catch (final XPathException e) {
-                throw new XPathException(t.getLine(), t.getColumn(), ErrorCodes.XPST0051, "Unknown simple type " + t.getText());
+                throw new XPathException(t.getLine(), t.getColumn(), ErrorCodes.XQST0052, "Unknown simple type " + t.getText());
             } catch (final IllegalQNameException e) {
                 throw new XPathException(t.getLine(), t.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + t.getText());
             }
@@ -3875,7 +4123,7 @@ throws PermissionDeniedException, EXistException, XPathException
                 path.add(castExpr);
                 step = castExpr;
             } catch (final XPathException e) {
-                throw new XPathException(t2.getLine(), t2.getColumn(), ErrorCodes.XPST0051, "Unknown simple type " + t2.getText());
+                throw new XPathException(t2.getLine(), t2.getColumn(), ErrorCodes.XQST0052, "Unknown simple type " + t2.getText());
             } catch (final IllegalQNameException e) {
                 throw new XPathException(t2.getLine(), t2.getColumn(), ErrorCodes.XPST0081, "No namespace defined for prefix " + t2.getText());
             }

@@ -28,7 +28,7 @@
     <parent>
         <groupId>org.exist-db</groupId>
         <artifactId>exist-parent</artifactId>
-        <version>7.0.0-SNAPSHOT</version>
+        <version>${revision}</version>
         <relativePath>exist-parent</relativePath>
     </parent>
 
@@ -37,13 +37,6 @@
 
     <name>eXist-db</name>
     <description>eXist-db multi-module project</description>
-
-    <scm>
-        <connection>scm:git:https://github.com/exist-db/exist.git</connection>
-        <developerConnection>scm:git:https://github.com/exist-db/exist.git</developerConnection>
-        <url>scm:git:https://github.com/exist-db/exist.git</url>
-      <tag>HEAD</tag>
-  </scm>
 
     <modules>
         <module>exist-parent</module>
@@ -58,6 +51,13 @@
         <module>exist-xqts</module>
     </modules>
 
+    <scm>
+        <connection>scm:git:https://github.com/exist-db/exist.git</connection>
+        <developerConnection>scm:git:https://github.com/exist-db/exist.git</developerConnection>
+        <url>scm:git:https://github.com/exist-db/exist.git</url>
+        <tag>HEAD</tag>
+    </scm>
+
     <build>
         <plugins>
             <plugin>
@@ -67,19 +67,141 @@
                     <skip>true</skip>
                 </configuration>
             </plugin>
+
+            <!-- Canonical config templates vs native XSDs (also drives CI governance via schema/governance.xsl) -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>xml-maven-plugin</artifactId>
+                <executions>
+                    <!--
+                        Schema-version governance: compares old vs current xs:schema/@version
+                        for any native XSD/canonical-template pair touched in a diff. Reads
+                        validate-canonical-instances' validationSets below for the pairing, plus
+                        a context.xml written by .github/scripts/prepare-governance-context.sh.
+
+                        phase=none is deliberate: this must NOT run on an ordinary `mvn install`/
+                        `mvn test` (no context.xml will exist outside CI). It only runs when
+                        invoked directly: `mvn xml:transform@schema-governance`.
+                    -->
+                    <execution>
+                        <id>schema-governance</id>
+                        <phase>none</phase>
+                        <goals>
+                            <goal>transform</goal>
+                        </goals>
+                        <configuration>
+                            <transformationSets>
+                                <transformationSet>
+                                    <dir>${project.build.directory}/governance</dir>
+                                    <includes>
+                                        <include>context.xml</include>
+                                    </includes>
+                                    <stylesheet>${project.basedir}/schema/governance.xsl</stylesheet>
+                                    <outputDir>${project.build.directory}/governance</outputDir>
+                                    <fileMappers>
+                                        <fileMapper implementation="org.codehaus.plexus.components.io.filemappers.FileExtensionMapper">
+                                            <targetExtension>.report.xml</targetExtension>
+                                        </fileMapper>
+                                    </fileMappers>
+                                </transformationSet>
+                            </transformationSets>
+                        </configuration>
+                    </execution>
+                    <execution>
+                        <id>validate-canonical-instances</id>
+                        <phase>validate</phase>
+                        <goals>
+                            <goal>validate</goal>
+                        </goals>
+                        <configuration>
+                            <!-- Forces a failure (rather than a silent live fetch) if any
+                                 reference can't be resolved through the catalog below -
+                                 guarantees this check stays offline. -->
+                            <catalogHandling>strict</catalogHandling>
+                            <catalogs>
+                                <catalog>${project.basedir}/exist-jetty-config/src/main/resources/webapp/WEB-INF/catalog.xml</catalog>
+                            </catalogs>
+                            <validationSets>
+                                <validationSet>
+                                    <dir>${project.basedir}/exist-distribution/src/main/config</dir>
+                                    <includes>
+                                        <include>conf.xml</include>
+                                    </includes>
+                                    <systemId>${project.basedir}/schema/conf.xsd</systemId>
+                                    <schemaLanguage>http://www.w3.org/XML/XMLSchema/v1.1</schemaLanguage>
+                                </validationSet>
+                                <validationSet>
+                                    <dir>${project.basedir}/exist-distribution/src/main/config</dir>
+                                    <includes>
+                                        <include>collection.xconf.init</include>
+                                    </includes>
+                                    <systemId>${project.basedir}/schema/collection.xconf.xsd</systemId>
+                                    <schemaLanguage>http://www.w3.org/XML/XMLSchema/v1.1</schemaLanguage>
+                                </validationSet>
+                                <validationSet>
+                                    <dir>${project.basedir}/exist-distribution/src/main/config</dir>
+                                    <includes>
+                                        <include>descriptor.xml</include>
+                                    </includes>
+                                    <systemId>${project.basedir}/schema/descriptor.xsd</systemId>
+                                    <schemaLanguage>http://www.w3.org/XML/XMLSchema/v1.1</schemaLanguage>
+                                </validationSet>
+                                <validationSet>
+                                    <dir>${project.basedir}/exist-jetty-config/src/main/resources/webapp/WEB-INF</dir>
+                                    <includes>
+                                        <include>controller-config.xml</include>
+                                    </includes>
+                                    <systemId>${project.basedir}/schema/controller-config.xsd</systemId>
+                                    <schemaLanguage>http://www.w3.org/XML/XMLSchema/v1.1</schemaLanguage>
+                                </validationSet>
+                                <validationSet>
+                                    <dir>${project.basedir}/exist-core/src/main/resources/org/exist/util</dir>
+                                    <includes>
+                                        <include>mime-types.xml</include>
+                                    </includes>
+                                    <systemId>${project.basedir}/schema/mime-types.xsd</systemId>
+                                    <schemaLanguage>http://www.w3.org/XML/XMLSchema/v1.1</schemaLanguage>
+                                </validationSet>
+                                <!-- Self-check (#5541-inspired): every native XSD we ship must itself be
+                                     a legal schema document per the W3C XSD 1.1 meta-schema (vendored
+                                     at exist-jetty-config/.../entities/XMLSchema.xsd). Catches malformed
+                                     schema authoring (e.g. misplaced xs:assert, bad @version) before release. -->
+                                <validationSet>
+                                    <dir>${project.basedir}/schema</dir>
+                                    <includes>
+                                        <include>**/*.xsd</include>
+                                    </includes>
+                                    <systemId>${project.basedir}/exist-jetty-config/src/main/resources/webapp/WEB-INF/entities/XMLSchema.xsd</systemId>
+                                    <schemaLanguage>http://www.w3.org/XML/XMLSchema/v1.1</schemaLanguage>
+                                </validationSet>
+                            </validationSets>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
         </plugins>
     </build>
 
     <profiles>
+        <!-- === Build umbrella profiles === -->
         <profile>
-            <id>installer</id>
+            <!-- Default contributor build: compiles, tests, produces a runnable distribution dir.
+                 Does NOT build installer or perf modules. -->
+            <id>local-build</id>
             <activation>
                 <activeByDefault>true</activeByDefault>
             </activation>
+        </profile>
+
+        <profile>
+            <!-- Full release build: adds exist-installer to the reactor and (via exist-parent's
+                 release-build profile) enables GPG signing + Central publishing. -->
+            <id>release-build</id>
             <modules>
                 <module>exist-installer</module>
             </modules>
         </profile>
+        <!-- === End Build umbrella profiles === -->
 
         <profile>
             <id>docker</id>
@@ -95,23 +217,126 @@
         </profile>
 
         <profile>
-            <id>concurrency-stress-tests</id>
-            <activation>
-                <activeByDefault>true</activeByDefault>
-            </activation>
+            <!-- Stress tests + JMH micro-benchmarks. -->
+            <id>perf-tests</id>
             <modules>
                 <module>exist-core-jcstress</module>
+                <module>exist-core-jmh</module>
+                <module>exist-indexes-jmh</module>
             </modules>
         </profile>
 
         <profile>
-            <id>micro-benchmarks</id>
+            <id>citation-release-metadata</id>
             <activation>
-                <activeByDefault>true</activeByDefault>
+                <property>
+                    <name>updateCff</name>
+                    <value>true</value>
+                </property>
             </activation>
-            <modules>
-                <module>exist-core-jmh</module>
-            </modules>
+            <properties>
+                <maven.build.timestamp.format>yyyy-MM-dd</maven.build.timestamp.format>
+            </properties>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-enforcer-plugin</artifactId>
+                        <executions>
+                            <execution>
+                                <id>require-release-version-for-citation-update</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>enforce</goal>
+                                </goals>
+                                <configuration>
+                                    <rules>
+                                        <requireProperty>
+                                            <property>project.version</property>
+                                            <regex>^(?!.*-SNAPSHOT$).+$</regex>
+                                            <regexMessage>The citation-release-metadata profile can only run for release versions (non-SNAPSHOT).</regexMessage>
+                                        </requireProperty>
+                                    </rules>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-antrun-plugin</artifactId>
+                        <executions>
+                            <!--
+                              git-commit-id-maven-plugin already sets git.commit.id, but Ant replaceregexp's
+                              replace= attribute is not re-interpolated with those runtime Maven properties
+                              before Ant applies it (literal ${git.commit.id} can end up in CITATION.cff).
+                              Export commitLine from Ant (git rev-parse) then use ${commitLine} in a second execution.
+                            -->
+                            <execution>
+                                <id>citation-cff-resolve-commit</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <exportAntProperties>true</exportAntProperties>
+                                    <target>
+                                        <mkdir dir="${project.build.directory}"/>
+                                        <exec executable="git" dir="${project.basedir}" failonerror="true" output="${project.build.directory}/cff-commit.tmp">
+                                            <arg value="rev-parse"/>
+                                            <arg value="HEAD"/>
+                                        </exec>
+                                        <replaceregexp file="${project.build.directory}/cff-commit.tmp"
+                                                       match="^([0-9a-f]{7,40})\s*$"
+                                                       replace="\1"
+                                                       byline="true"/>
+                                        <loadfile property="cff.head" srcFile="${project.build.directory}/cff-commit.tmp" encoding="UTF-8">
+                                            <filterchain>
+                                                <striplinebreaks/>
+                                            </filterchain>
+                                        </loadfile>
+                                        <property name="commitLine" value="commit: ${cff.head}"/>
+                                        <delete file="${project.build.directory}/cff-commit.tmp" failonerror="false" quiet="true"/>
+                                    </target>
+                                </configuration>
+                            </execution>
+                            <execution>
+                                <id>update-citation-cff</id>
+                                <phase>validate</phase>
+                                <goals>
+                                    <goal>run</goal>
+                                </goals>
+                                <configuration>
+                                    <target>
+                                        <!-- Guard against stale temp files left by interrupted text replacements -->
+                                        <delete failonerror="false" quiet="true">
+                                            <fileset dir="${project.basedir}" includes="tmp*tmp"/>
+                                        </delete>
+                                        <replaceregexp file="${project.basedir}/CITATION.cff"
+                                                       match="^version:\s*.*$"
+                                                       replace="version: ${project.version}"
+                                                       byline="true"/>
+                                        <replaceregexp file="${project.basedir}/CITATION.cff"
+                                                       match="^date-released:\s*.*$"
+                                                       replace="date-released: '${maven.build.timestamp}'"
+                                                       byline="true"/>
+                                        <replaceregexp file="${project.basedir}/CITATION.cff"
+                                                       match="https://github\.com/eXist-db/exist/releases/tag/eXist-[^ '\&quot;]+"
+                                                       replace="https://github.com/eXist-db/exist/releases/tag/eXist-${project.version}"
+                                                       byline="true"/>
+                                        <replaceregexp file="${project.basedir}/CITATION.cff"
+                                                       match="^commit:\s*.*$"
+                                                       replace="${commitLine}"
+                                                       byline="true"/>
+                                        <delete failonerror="false" quiet="true">
+                                            <fileset dir="${project.basedir}" includes="tmp*tmp"/>
+                                        </delete>
+                                    </target>
+                                </configuration>
+                            </execution>
+                        </executions>
+                    </plugin>
+                </plugins>
+            </build>
         </profile>
 
     </profiles>

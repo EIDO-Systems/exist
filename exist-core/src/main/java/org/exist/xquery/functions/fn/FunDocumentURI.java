@@ -61,6 +61,11 @@ public class FunDocumentURI extends Function {
     }
 
     @Override
+    public boolean isContextDependent() {
+        return getArgumentCount() == 0;
+    }
+
+    @Override
     public Sequence eval(final Sequence contextSequence, final Item contextItem) throws XPathException {
         if (context.getProfiler().isEnabled()) {
             context.getProfiler().start(this);
@@ -109,10 +114,8 @@ public class FunDocumentURI extends Function {
                 result = new AnyURIValue(this, path);
             }
 
-        } else {
-            if (value instanceof DocumentImpl && ((DocumentImpl) value).getDocumentURI() != null) {
-                result = new AnyURIValue(this, ((DocumentImpl) value).getDocumentURI());
-            }
+        } else if (value instanceof DocumentImpl impl && impl.getDocumentURI() != null) {
+            result = new AnyURIValue(this, impl.getDocumentURI());
         }
 
         if (context.getProfiler().isEnabled()) {

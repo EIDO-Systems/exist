@@ -68,88 +68,95 @@ public class IndexerTest {
 			true);
 
     private final static String XML =
-        "<?xml version=\"1.0\"?>\n" +
-	"<x>\n" +
-	"    <y>a <b>b</b> c</y>\n" +
-	"    <z>a<b>b</b>c</z>\n" +
-	"</x>\n";
+        """
+    <?xml version="1.0"?>
+    <x>
+        <y>a <b>b</b> c</y>
+        <z>a<b>b</b>c</z>
+    </x>
+    """;
     
     private final static String XML_XSLT =
-        "<?xml version=\"1.0\"?>\n" +
-	"<xsl:stylesheet xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">\n" +
-        "    <xsl:template match=\"processing-instruction()\" mode=\"xml2string\">\n" +
-        "        <xsl:text>&lt;?</xsl:text>\n" +
-        "        <xsl:value-of select=\"name()\"/>\n" +
-        "        <xsl:text> \n" +
-        "\n" +
-        "</xsl:text>\n" +
-        "        <xsl:value-of select=\".\"/>\n" +
-        "        <xsl:text>?&gt;</xsl:text>\n" +
-        "    </xsl:template>\n" +
-        "</xsl:stylesheet>\n";
+        """
+    <?xml version="1.0"?>
+    <xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:template match="processing-instruction()" mode="xml2string">
+            <xsl:text>&lt;?</xsl:text>
+            <xsl:value-of select="name()"/>
+            <xsl:text>\s
+    
+    </xsl:text>
+            <xsl:value-of select="."/>
+            <xsl:text>?&gt;</xsl:text>
+        </xsl:template>
+    </xsl:stylesheet>
+    """;
 
     private final static String RESULT_NO_PRESERVE_MIXED_WS_XML =
-	"<result>\n" +
-	"    <node n=\"1\">\n" +
-	"        <y>a\n" +
-	"        <b>b</b>\n" +
-	"            c</y>\n" +
-	"    </node>\n" +
-	"    <node n=\"2\">a </node>\n" +
-	"    <node n=\"3\">\n" +
-	"        <b>b</b>\n" +
-	"    </node>\n" +
-	"    <node n=\"4\">b</node>\n"+
-	"    <node n=\"5\"> c</node>\n" +
-	"    <node n=\"6\">\n" +
-	"        <z>a\n" +
-	"            <b>b</b>\n" +
-	"            c</z>\n" +
-	"    </node>\n" +
-	"    <node n=\"7\">a</node>\n" +
-	"    <node n=\"8\">\n" +
-	"        <b>b</b>\n" +
-	"    </node>\n" +
-	"    <node n=\"9\">b</node>\n" +
-	"    <node n=\"10\">c</node>\n" +
-	"</result>";
+	"""
+    <result>
+        <node n="1">
+            <y>a
+            <b>b</b>
+                c</y>
+        </node>
+        <node n="2">a </node>
+        <node n="3">
+            <b>b</b>
+        </node>
+        <node n="4">b</node>
+        <node n="5"> c</node>
+        <node n="6">
+            <z>a
+                <b>b</b>
+                c</z>
+        </node>
+        <node n="7">a</node>
+        <node n="8">
+            <b>b</b>
+        </node>
+        <node n="9">b</node>
+        <node n="10">c</node>
+    </result>""";
 
     private final static String RESULT_PRESERVE_MIXED_WS_XML =
-	"<result>\n" +
-	"    <node n=\"1\">\n" +
-	"        <y>a <b>b</b> c</y>\n" +
-	"    </node>\n" +
-	"    <node n=\"2\">a </node>\n" +
-	"    <node n=\"3\">\n" +
-	"        <b>b</b>\n" +
-	"    </node>\n" +
-	"    <node n=\"4\">b</node>\n"+
-	"    <node n=\"5\"> c</node>\n" +
-	"    <node n=\"6\">\n" +
-	"        <z>a<b>b</b> c</z>\n" +
-	"    </node>\n" +
-	"    <node n=\"7\">a</node>\n" +
-	"    <node n=\"8\">\n" +
-	"        <b>b</b>\n" +
-	"    </node>\n" +
-	"    <node n=\"9\">b</node>\n" +
-	"    <node n=\"10\">c</node>\n" +
-	"</result>";
+	"""
+    <result>
+        <node n="1">
+            <y>a <b>b</b> c</y>
+        </node>
+        <node n="2">a </node>
+        <node n="3">
+            <b>b</b>
+        </node>
+        <node n="4">b</node>
+        <node n="5"> c</node>
+        <node n="6">
+            <z>a<b>b</b> c</z>
+        </node>
+        <node n="7">a</node>
+        <node n="8">
+            <b>b</b>
+        </node>
+        <node n="9">b</node>
+        <node n="10">c</node>
+    </result>""";
 
     private final static String RESULT_XML_XSLT =
-        "<result>\n" +
-	"    <xsl:stylesheet xmlns:xsl=\"http://www.w3.org/1999/XSL/Transform\">\n" +
-        "    <xsl:template match=\"processing-instruction()\" mode=\"xml2string\">\n" +
-        "        <xsl:text>&lt;?</xsl:text>\n" +
-        "        <xsl:value-of select=\"name()\"/>\n" +
-        "        <xsl:text> \n" +
-        "\n" +
-        "</xsl:text>\n" +
-        "        <xsl:value-of select=\".\"/>\n" +
-        "        <xsl:text>?&gt;</xsl:text>\n" +
-        "    </xsl:template>\n" +
-        "</xsl:stylesheet>\n" +
-        "</result>";
+        """
+    <result>
+        <xsl:stylesheet xmlns:xsl="http://www.w3.org/1999/XSL/Transform">
+        <xsl:template match="processing-instruction()" mode="xml2string">
+            <xsl:text>&lt;?</xsl:text>
+            <xsl:value-of select="name()"/>
+            <xsl:text>\s
+    
+    </xsl:text>
+            <xsl:value-of select="."/>
+            <xsl:text>?&gt;</xsl:text>
+        </xsl:template>
+    </xsl:stylesheet>
+    </result>""";
     
     private final static String XQUERY =
 	"let $test := doc('" + TestConstants.TEST_COLLECTION_URI.toString() + "/"+ TestConstants.TEST_XML_URI.toString() + "')/* " +
@@ -208,14 +215,14 @@ public class IndexerTest {
         }
     }
 
-    @Ignore
+    @Ignore("Whitespace handling in mixed content, see #6156")
     @Test
     public void retrieve_preserve_mixed_ws() throws EXistException, IOException, LockException, AuthenticationException, PermissionDeniedException, SAXException, XPathException {
 		//Nodes 1, 7 and 13 are not in mixed-contents and should not be preserved. They are the spaces between elements x and y, y and z, and z and x.
         assertEquals(RESULT_PRESERVE_MIXED_WS_XML, store_and_retrieve_ws_mixed_content_value(true, XML, XQUERY));
     }
 
-    @Ignore
+    @Ignore("Whitespace handling in mixed content, see #6156")
     @Test
     public void retrieve_no_preserve_mixed_ws() throws EXistException, PermissionDeniedException, IOException, LockException, AuthenticationException, SAXException, XPathException {
         assertEquals(RESULT_NO_PRESERVE_MIXED_WS_XML, store_and_retrieve_ws_mixed_content_value(false, XML, XQUERY));

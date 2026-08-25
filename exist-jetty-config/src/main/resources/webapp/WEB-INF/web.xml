@@ -8,9 +8,9 @@
 <web-app 
     xmlns="https://jakarta.ee/xml/ns/jakartaee"
     xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
-    xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/web-app_5_0.xsd"
+    xsi:schemaLocation="https://jakarta.ee/xml/ns/jakartaee https://jakarta.ee/xml/ns/jakartaee/web-app_6_0.xsd"
     metadata-complete="false"
-    version="5.0">
+    version="6.0">
 
     <description>eXist Open Source Native XML Database</description>
     <display-name>eXist XML Database</display-name>
@@ -140,7 +140,7 @@
         -->
         <init-param>
             <param-name>xquery-submission</param-name>
-            <param-value>enabled</param-value>
+            <param-value>authenticated</param-value>
         </init-param>
 
         <!--
@@ -162,7 +162,7 @@
         -->
         <init-param>
             <param-name>xupdate-submission</param-name>
-            <param-value>enabled</param-value>
+            <param-value>authenticated</param-value>
         </init-param>
 
 
@@ -176,6 +176,7 @@
     <servlet>
         <servlet-name>JMXServlet</servlet-name>
         <servlet-class>org.exist.management.client.JMXServlet</servlet-class>
+        <load-on-startup>4</load-on-startup>
     </servlet>
 
     <!--
@@ -205,9 +206,15 @@
             <param-value>UTF-8</param-value>
         </init-param>
 
+        <!--
+            Hide internal error details (stack traces, file paths, query
+            source) from HTTP responses. Errors are still logged to the
+            server log. Set to "false" to surface details to clients
+            (useful for development).
+        -->
         <init-param>
             <param-name>hide-error-messages</param-name>
-            <param-value>false</param-value>
+            <param-value>true</param-value>
         </init-param>
 
     </servlet>

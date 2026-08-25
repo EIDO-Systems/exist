@@ -34,7 +34,6 @@ import org.exist.xquery.ErrorCodes;
 import org.exist.xquery.Expression;
 import org.exist.xquery.XPathException;
 
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import static org.exist.dom.QName.Validity.VALID;
@@ -66,7 +65,7 @@ public class StringValue extends AtomicValue {
         this(null, string, type);
     }
 
-    public StringValue(final Expression expression, String string, int type) throws XPathException {
+    public StringValue(final Expression expression, final String string, final int type) throws XPathException {
         this(expression, string, type, true);
     }
 
@@ -74,18 +73,18 @@ public class StringValue extends AtomicValue {
         this(null, string, type, expand);
     }
 
-    public StringValue(final Expression expression, String string, int type, boolean expand) throws XPathException {
+    public StringValue(final Expression expression, final String string, int type, boolean expand) throws XPathException {
         super(expression);
         this.type = type;
-        if (expand) {
-            string = StringValue.expand(string, expression);
-        } //Should we have character entities
+        // Should we have character entities
+        final String maybeExpanded = expand ? StringValue.expand(string, expression) : string;
+
         if (type == Type.STRING) {
-            this.value = string;
+            this.value = maybeExpanded;
         } else if (type == Type.NORMALIZED_STRING) {
-            this.value = normalizeWhitespace(string);
+            this.value = normalizeWhitespace(maybeExpanded);
         } else {
-            this.value = collapseWhitespace(string);
+            this.value = collapseWhitespace(maybeExpanded);
             checkType();
         }
     }
@@ -96,11 +95,10 @@ public class StringValue extends AtomicValue {
 
     public StringValue(final Expression expression, final String string) {
         super(expression);
-        //string = StringValue.expand(string); //Should we have character entities
         value = string;
     }
 
-    public final static String normalizeWhitespace(CharSequence seq) {
+    public static String normalizeWhitespace(final CharSequence seq) {
         if (seq == null) {
             return "";
         }
@@ -128,54 +126,40 @@ public class StringValue extends AtomicValue {
      * @param in the input string
      * @return the collapsed string
      */
-    public static String collapseWhitespace(CharSequence in) {
+    public static String collapseWhitespace(final CharSequence in) {
         if (in == null) {
             return "";
         }
         if (in.isEmpty()) {
             return in.toString();
         }
-        int i = 0;
-        // this method is performance critical, so first test if we need to collapse at all
-        for (; i < in.length(); i++) {
-            final char c = in.charAt(i);
-            if (XMLChar.isSpace(c)) {
-                if (i + 1 < in.length() && XMLChar.isSpace(in.charAt(i + 1))) {
-                    break;
-                }
-            }
-        }
-        if (i == in.length())
-        // no whitespace to collapse, just return
-        {
-            return in.toString();
-        }
-
-        // start to collapse whitespace
+        // XML Schema "collapse" facet:
+        // 1. Replace #x9, #xA, #xD with #x20
+        // 2. Collapse consecutive #x20 to single #x20
+        // 3. Strip leading and trailing #x20
         final StringBuilder sb = new StringBuilder(in.length());
-        sb.append(in.subSequence(0, i + 1));
-        boolean inWhitespace = true;
-        for (; i < in.length(); i++) {
+        boolean lastWasSpace = true; // treat start as space to strip leading
+        for (int i = 0; i < in.length(); i++) {
             final char c = in.charAt(i);
             if (XMLChar.isSpace(c)) {
-                if (inWhitespace) {
-                    // remove the whitespace
-                } else {
+                if (!lastWasSpace) {
                     sb.append(' ');
-                    inWhitespace = true;
+                    lastWasSpace = true;
                 }
+                // else: skip consecutive whitespace
             } else {
                 sb.append(c);
-                inWhitespace = false;
+                lastWasSpace = false;
             }
         }
-        if (sb.charAt(sb.length() - 1) == ' ') {
+        // Strip trailing space
+        if (sb.length() > 0 && sb.charAt(sb.length() - 1) == ' ') {
             sb.deleteCharAt(sb.length() - 1);
         }
         return sb.toString();
     }
 
-    public final static String trimWhitespace(String in) {
+    public static String trimWhitespace(final String in) {
         if (in == null) {
             return "";
         }
@@ -195,11 +179,11 @@ public class StringValue extends AtomicValue {
         return in.substring(first, last + 1);
     }
 
-    public final static String expand(CharSequence seq) throws XPathException {
+    public static String expand(final CharSequence seq) throws XPathException {
         return expand(seq, null);
     }
 
-    public final static String expand(CharSequence seq, final Expression expression) throws XPathException {
+    public static String expand(final CharSequence seq, final Expression expression) throws XPathException {
         if (seq == null) {
             return "";
         }
@@ -316,22 +300,11 @@ public class StringValue extends AtomicValue {
      * The method <code>expandEntity</code>
      *
      * @param buf a <code>String</code> value
-     * @return an <code>int</code> value
-     * @throws XPathException if an error occurs
-     */
-    private final static int expandEntity(String buf) throws XPathException {
-        return expandEntity(buf, null);
-    }
-
-    /**
-     * The method <code>expandEntity</code>
-     *
-     * @param buf a <code>String</code> value
      * @param expression the expression from which the value derives
      * @return an <code>int</code> value
      * @throws XPathException if an error occurs
      */
-    private final static int expandEntity(String buf, final Expression expression) throws XPathException {
+    private static int expandEntity(final String buf, final Expression expression) throws XPathException {
         if ("amp".equals(buf)) {
             return '&';
         } else if ("lt".equals(buf)) {
@@ -353,22 +326,11 @@ public class StringValue extends AtomicValue {
      * The method <code>expandCharRef</code>
      *
      * @param buf a <code>String</code> value
-     * @return an <code>int</code> value
-     * @throws XPathException if an error occurs
-     */
-    private final static int expandCharRef(String buf) throws XPathException {
-        return expandCharRef(buf, null);
-    }
-
-    /**
-     * The method <code>expandCharRef</code>
-     *
-     * @param buf a <code>String</code> value
      * @param expression the expression from which the value derives
      * @return an <code>int</code> value
      * @throws XPathException if an error occurs
      */
-    private final static int expandCharRef(String buf, final Expression expression) throws XPathException {
+    private static int expandCharRef(final String buf, final Expression expression) throws XPathException {
         try {
             int charNumber;
             if (buf.length() > 1 && buf.charAt(0) == 'x') {
@@ -382,11 +344,11 @@ public class StringValue extends AtomicValue {
             }
             return charNumber;
         } catch (final NumberFormatException e) {
-            throw new XPathException(expression, "Unknown character reference: " + buf);
+            throw new XPathException(expression, ErrorCodes.XQST0090, "Unknown character reference: " + buf);
         }
     }
 
-    public void append(String toAppend) {
+    public void append(final String toAppend) {
         value += toAppend;
     }
 
@@ -397,56 +359,48 @@ public class StringValue extends AtomicValue {
 
     private void checkType() throws XPathException {
         switch (type) {
-            case Type.NORMALIZED_STRING:
-            case Type.TOKEN:
-                return;
-            case Type.LANGUAGE:
-                final Matcher matcher = langPattern.matcher(value);
-                if (!matcher.matches()) {
-                    throw new XPathException(getExpression(),
-                            "Type error: string "
-                                    + value
-                                    + " is not valid for type xs:language");
+            case Type.NORMALIZED_STRING, Type.TOKEN -> {
+            }
+            case Type.LANGUAGE -> {
+                if (!langPattern.matcher(value).matches()) {
+                    throw new XPathException(getExpression(), ErrorCodes.FORG0001,
+                            "String '" + value + "' is not valid for type xs:language");
                 }
-                return;
-            case Type.NAME:
-                if (QName.isQName(value) != VALID.val) {
-                    throw new XPathException(getExpression(), "Type error: string " + value + " is not a valid xs:Name");
+            }
+            case Type.NAME -> {
+                if (!XMLNames.isName(value)) {
+                    throw new XPathException(getExpression(), ErrorCodes.FORG0001,
+                            "String '" + value + "' is not a valid xs:Name");
                 }
-                return;
-            case Type.NCNAME:
-            case Type.ID:
-            case Type.IDREF:
-            case Type.ENTITY:
+            }
+            case Type.NCNAME, Type.ID, Type.IDREF, Type.ENTITY -> {
                 if (!XMLNames.isNCName(value)) {
-                    throw new XPathException(getExpression(), "Type error: string " + value + " is not a valid " + Type.getTypeName(type));
+                    throw new XPathException(getExpression(), ErrorCodes.FORG0001,
+                            "String '" + value + "' is not a valid " + Type.getTypeName(type));
                 }
-                return;
-            case Type.NMTOKEN:
+            }
+            case Type.NMTOKEN -> {
                 if (!XMLNames.isNmToken(value)) {
-                    throw new XPathException(getExpression(), "Type error: string " + value + " is not a valid xs:NMTOKEN");
+                    throw new XPathException(getExpression(), ErrorCodes.FORG0001,
+                            "String '" + value + "' is not a valid xs:NMTOKEN");
                 }
+            }
+            default -> {
+            }
         }
     }
 
-    /* (non-Javadoc)
-     * @see org.exist.xquery.value.AtomicValue#getType()
-     */
+    @Override
     public int getType() {
         return type;
     }
 
-    /* (non-Javadoc)
-     * @see org.exist.xquery.value.Item#getStringValue()
-     */
+    @Override
     public String getStringValue() {
         return getStringValue(false);
     }
 
-    /* (non-Javadoc)
-     * @see org.exist.xquery.value.Item#getStringValue()
-     */
-    public String getStringValue(boolean bmpCheck) {
+    public String getStringValue(final boolean bmpCheck) {
         if (bmpCheck) {
             final StringBuilder buf = new StringBuilder(value.length());
             char ch;
@@ -469,101 +423,65 @@ public class StringValue extends AtomicValue {
         }
     }
 
-    public Item itemAt(int pos) {
+    @Override
+    public Item itemAt(final int pos) {
         return pos == 0 ? this : null;
     }
 
-    /* (non-Javadoc)
-     * @see org.exist.xquery.value.AtomicValue#convertTo(int)
-     */
-    public AtomicValue convertTo(int requiredType) throws XPathException {
-        switch (requiredType) {
+    @Override
+    public AtomicValue convertTo(final int requiredType) throws XPathException {
+        return switch (requiredType) {
             //TODO : should we allow these 2 type under-promotions ?
-            case Type.ANY_ATOMIC_TYPE:
-            case Type.ITEM:
-            case Type.STRING:
-                return this;
-            case Type.NORMALIZED_STRING:
-            case Type.TOKEN:
-            case Type.LANGUAGE:
-            case Type.NMTOKEN:
-            case Type.NAME:
-            case Type.NCNAME:
-            case Type.ID:
-            case Type.IDREF:
-            case Type.ENTITY:
-                return new StringValue(getExpression(), value, requiredType);
-            case Type.ANY_URI:
-                return new AnyURIValue(getExpression(), value);
-            case Type.BOOLEAN:
+            case Type.ANY_ATOMIC_TYPE, Type.ITEM, Type.STRING -> this;
+            case Type.NORMALIZED_STRING, Type.TOKEN, Type.LANGUAGE,
+                 Type.NMTOKEN, Type.NAME, Type.NCNAME, Type.ID,
+                 Type.IDREF, Type.ENTITY
+                    -> new StringValue(getExpression(), value, requiredType);
+            case Type.ANY_URI -> new AnyURIValue(getExpression(), value);
+            case Type.BOOLEAN -> {
                 final String trimmed = trimWhitespace(value);
                 if ("0".equals(trimmed) || "false".equals(trimmed)) {
-                    return BooleanValue.FALSE;
+                    yield BooleanValue.FALSE;
                 } else if ("1".equals(trimmed) || "true".equals(trimmed)) {
-                    return BooleanValue.TRUE;
+                    yield BooleanValue.TRUE;
                 } else {
                     throw new XPathException(getExpression(), ErrorCodes.FORG0001,
                             "cannot convert string '" + value + "' to boolean");
                 }
-            case Type.FLOAT:
-                return new FloatValue(getExpression(), value);
-            case Type.DOUBLE:
-            case Type.NUMERIC:
-                return new DoubleValue(getExpression(), this);
-            case Type.DECIMAL:
-                return new DecimalValue(getExpression(), value);
-            case Type.INTEGER:
-            case Type.NON_POSITIVE_INTEGER:
-            case Type.NEGATIVE_INTEGER:
-            case Type.POSITIVE_INTEGER:
-            case Type.LONG:
-            case Type.INT:
-            case Type.SHORT:
-            case Type.BYTE:
-            case Type.NON_NEGATIVE_INTEGER:
-            case Type.UNSIGNED_LONG:
-            case Type.UNSIGNED_INT:
-            case Type.UNSIGNED_SHORT:
-            case Type.UNSIGNED_BYTE:
-                return new IntegerValue(getExpression(), value, requiredType);
-            case Type.BASE64_BINARY:
-                return new BinaryValueFromBinaryString(getExpression(), new Base64BinaryValueType(), value);
-            case Type.HEX_BINARY:
-                return new BinaryValueFromBinaryString(getExpression(), new HexBinaryValueType(), value);
-            case Type.DATE_TIME:
-                return new DateTimeValue(getExpression(), value);
-            case Type.TIME:
-                return new TimeValue(getExpression(), value);
-            case Type.DATE:
-                return new DateValue(getExpression(), value);
-            case Type.DATE_TIME_STAMP:
-                return new DateTimeStampValue(getExpression(), value);
-            case Type.DURATION:
-                return new DurationValue(getExpression(), value);
-            case Type.YEAR_MONTH_DURATION:
-                return new YearMonthDurationValue(getExpression(), value);
-            case Type.DAY_TIME_DURATION:
-                return new DayTimeDurationValue(getExpression(), value);
-            case Type.G_YEAR:
-                return new GYearValue(getExpression(), value);
-            case Type.G_MONTH:
-                return new GMonthValue(getExpression(), value);
-            case Type.G_DAY:
-                return new GDayValue(getExpression(), value);
-            case Type.G_YEAR_MONTH:
-                return new GYearMonthValue(getExpression(), value);
-            case Type.G_MONTH_DAY:
-                return new GMonthDayValue(getExpression(), value);
-            case Type.UNTYPED_ATOMIC:
-                return new UntypedAtomicValue(getExpression(), getStringValue());
-            default:
-                throw new XPathException(getExpression(), ErrorCodes.FORG0001, "cannot cast '" +
+            }
+            case Type.FLOAT -> new FloatValue(getExpression(), value);
+            case Type.DOUBLE, Type.NUMERIC -> new DoubleValue(getExpression(), this);
+            case Type.DECIMAL -> new DecimalValue(getExpression(), value);
+            case Type.INTEGER,
+                 Type.POSITIVE_INTEGER, Type.NEGATIVE_INTEGER, Type.NON_POSITIVE_INTEGER, Type.NON_NEGATIVE_INTEGER,
+                 Type.LONG, Type.UNSIGNED_LONG,
+                 Type.INT, Type.UNSIGNED_INT,
+                 Type.SHORT, Type.UNSIGNED_SHORT,
+                 Type.BYTE, Type.UNSIGNED_BYTE
+                    -> new IntegerValue(getExpression(), value, requiredType);
+            case Type.BASE64_BINARY -> new BinaryValueFromBinaryString(getExpression(), new Base64BinaryValueType(), value);
+            case Type.HEX_BINARY -> new BinaryValueFromBinaryString(getExpression(), new HexBinaryValueType(), value);
+            case Type.DATE_TIME -> new DateTimeValue(getExpression(), value);
+            case Type.TIME -> new TimeValue(getExpression(), value);
+            case Type.DATE -> new DateValue(getExpression(), value);
+            case Type.DATE_TIME_STAMP -> new DateTimeStampValue(getExpression(), value);
+            case Type.DURATION -> new DurationValue(getExpression(), value);
+            case Type.YEAR_MONTH_DURATION -> new YearMonthDurationValue(getExpression(), value);
+            case Type.DAY_TIME_DURATION -> new DayTimeDurationValue(getExpression(), value);
+            case Type.G_YEAR -> new GYearValue(getExpression(), value);
+            case Type.G_MONTH -> new GMonthValue(getExpression(), value);
+            case Type.G_DAY -> new GDayValue(getExpression(), value);
+            case Type.G_YEAR_MONTH -> new GYearMonthValue(getExpression(), value);
+            case Type.G_MONTH_DAY -> new GMonthDayValue(getExpression(), value);
+            case Type.UNTYPED_ATOMIC -> new UntypedAtomicValue(getExpression(), getStringValue());
+            default -> throw new XPathException(getExpression(), ErrorCodes.FORG0001, "cannot cast '" +
                         Type.getTypeName(this.getItemType()) + "(\"" + getStringValue() + "\")' to " +
                         Type.getTypeName(requiredType));
-        }
+        };
     }
 
-    public int conversionPreference(Class<?> javaClass) {
+    @Override
+    public int conversionPreference(final Class<?> javaClass) {
         if (javaClass.isAssignableFrom(StringValue.class)) {
             return 0;
         }
@@ -628,47 +546,49 @@ public class StringValue extends AtomicValue {
         } else if (target == boolean.class || target == Boolean.class) {
             return (T) Boolean.valueOf(effectiveBooleanValue());
         } else if (target == char.class || target == Character.class) {
-            if (value.length() > 1 || value.isEmpty()) {
-                throw new XPathException(getExpression(), "cannot convert string with length = 0 or length > 1 to Java character");
+            if (value.length() != 1) {
+                throw new XPathException(getExpression(), ErrorCodes.ERROR, "cannot convert string with length = 0 or length > 1 to Java character");
             }
             return (T) Character.valueOf(value.charAt(0));
         }
 
-        throw new XPathException(getExpression(), "cannot convert value of type " + Type.getTypeName(type) +
+        throw new XPathException(getExpression(), ErrorCodes.ERROR, "cannot convert value of type " + Type.getTypeName(type) +
                 " to Java object of type " + target.getName());
     }
 
     @Override
-    public boolean compareTo(Collator collator, Comparison operator, AtomicValue other) throws XPathException {
+    public boolean compareTo(final Collator collator, final Comparison operator, final AtomicValue other) throws XPathException {
         if (other.isEmpty()) {
             return false;
         }
         //A value of type xs:anyURI (or any type derived by restriction from xs:anyURI)
         //can be promoted to the type xs:string.
         //The result of this promotion is created by casting the original value to the type xs:string.
+        final AtomicValue promotedOther;
         if (Type.subTypeOf(other.getType(), Type.ANY_URI)) {
-            other = other.convertTo(Type.STRING);
+            promotedOther = other.convertTo(Type.STRING);
+        } else if (Type.subTypeOf(other.getType(), Type.STRING)) {
+            promotedOther = other;
+        } else {
+            throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
+                    "can not compare xs:string('" + value + "') with " +
+                            Type.getTypeName(other.getType()) + "('" + other.getStringValue() + "')");
         }
-        if (Type.subTypeOf(other.getType(), Type.STRING)) {
-            try {
-                final int cmp = Collations.compare(collator, value, other.getStringValue());
-                return switch (operator) {
-                    case EQ -> cmp == 0;
-                    case NEQ -> cmp != 0;
-                    case LT -> cmp < 0;
-                    case LTEQ -> cmp <= 0;
-                    case GT -> cmp > 0;
-                    case GTEQ -> cmp >= 0;
-                    default ->
-                            throw new XPathException(getExpression(), "Type error: cannot apply operand to string value");
-                };
-            } catch (final UnsupportedOperationException e) {
-                throw new XPathException(getExpression(), ErrorCodes.FOCH0004, e.getMessage());
-            }
+        try {
+            final int cmp = Collations.compare(collator, value, promotedOther.getStringValue());
+            return switch (operator) {
+                case EQ -> cmp == 0;
+                case NEQ -> cmp != 0;
+                case LT -> cmp < 0;
+                case LTEQ -> cmp <= 0;
+                case GT -> cmp > 0;
+                case GTEQ -> cmp >= 0;
+                default ->
+                        throw new XPathException(getExpression(), ErrorCodes.ERROR, "Type error: cannot apply operand to string value");
+            };
+        } catch (final UnsupportedOperationException e) {
+            throw new XPathException(getExpression(), ErrorCodes.FOCH0004, e.getMessage());
         }
-        throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
-                "can not compare xs:string('" + value + "') with " +
-                        Type.getTypeName(other.getType()) + "('" + other.getStringValue() + "')");
     }
 
     @Override
@@ -683,7 +603,7 @@ public class StringValue extends AtomicValue {
             }
         }
 
-        if (Type.subTypeOf(other.getType(), Type.STRING)) {
+        if (Type.subTypeOf(other.getType(), Type.STRING) || Type.subTypeOf(other.getType(), Type.ANY_URI)) {
             try {
                 return Collations.compare(collator, value, other.getStringValue());
             } catch (final UnsupportedOperationException e) {
@@ -696,7 +616,7 @@ public class StringValue extends AtomicValue {
 
 
     @Override
-    public boolean startsWith(Collator collator, AtomicValue other) throws XPathException {
+    public boolean startsWith(final Collator collator, final AtomicValue other) throws XPathException {
         try {
             return Collations.startsWith(collator, value, other.getStringValue());
         } catch (final UnsupportedOperationException e) {
@@ -705,7 +625,7 @@ public class StringValue extends AtomicValue {
     }
 
     @Override
-    public boolean endsWith(Collator collator, AtomicValue other) throws XPathException {
+    public boolean endsWith(final Collator collator, final AtomicValue other) throws XPathException {
         try {
             return Collations.endsWith(collator, value, other.getStringValue());
         } catch (final UnsupportedOperationException e) {
@@ -722,60 +642,47 @@ public class StringValue extends AtomicValue {
         }
     }
 
-    /* (non-Javadoc)
-     * @see org.exist.xquery.value.AtomicValue#effectiveBooleanValue()
-     */
+    @Override
     public boolean effectiveBooleanValue() throws XPathException {
         // If its operand is a singleton value of type xs:string, xs:anyURI, xs:untypedAtomic,
         //or a type derived from one of these, fn:boolean returns false if the operand value has zero length; otherwise it returns true.
         return !value.isEmpty();
     }
 
-    /* (non-Javadoc)
-     * @see java.lang.Object#toString()
-     */
+    @Override
     public String toString() {
         return value;
     }
 
-    /* (non-Javadoc)
-     * @see org.exist.xquery.value.AtomicValue#max(org.exist.xquery.value.AtomicValue)
-     */
-    public AtomicValue max(Collator collator, AtomicValue other) throws XPathException {
+    @Override
+    public AtomicValue max(final Collator collator, final AtomicValue other) throws XPathException {
         if (Type.subTypeOf(other.getType(), Type.STRING)) {
             return Collations.compare(collator, value, ((StringValue) other).value) > 0 ? this : other;
-        } else {
-            return Collations.compare(collator, value, ((StringValue) other.convertTo(getType())).value) > 0
-                    ? this
-                    : other;
         }
+        final StringValue converted = (StringValue) other.convertTo(getType());
+        return Collations.compare(collator, value, converted.value) > 0 ? this : other;
     }
 
-    public AtomicValue min(Collator collator, AtomicValue other) throws XPathException {
+    @Override
+    public AtomicValue min(final Collator collator, final AtomicValue other) throws XPathException {
         if (Type.subTypeOf(other.getType(), Type.STRING)) {
             return Collations.compare(collator, value, ((StringValue) other).value) < 0 ? this : other;
-        } else {
-            return Collations.compare(collator, value, ((StringValue) other.convertTo(getType())).value) < 0
-                    ? this
-                    : other;
         }
+        final StringValue converted = (StringValue) other.convertTo(getType());
+        return Collations.compare(collator, value, converted.value) < 0 ? this : other;
     }
 
-    /* (non-Javadoc)
-     * @see java.lang.Comparable#compareTo(java.lang.Object)
-     */
-    public int compareTo(Object o) {
+    @Override
+    public int compareTo(final Object o) {
         final AtomicValue other = (AtomicValue) o;
-//        if(Type.subTypeOf(other.getType(), Type.STRING))
         if (getType() == other.getType()) {
             return value.compareTo(((StringValue) other).value);
-        } else {
-            return getType() > other.getType() ? 1 : -1;
         }
+        return getType() > other.getType() ? 1 : -1;
     }
 
     /**
-     * Serialize for the persistant storage
+     * Serialize for the persistent storage
      *
      * @param offset the byte offset at which to start encoding
      * @param caseSensitive should the string be converted to lower case?

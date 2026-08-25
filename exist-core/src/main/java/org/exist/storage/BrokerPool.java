@@ -56,6 +56,7 @@ import org.exist.security.internal.SecurityManagerImpl;
 import org.exist.storage.blob.BlobStore;
 import org.exist.storage.blob.BlobStoreImplService;
 import org.exist.storage.blob.BlobStoreService;
+import org.exist.storage.vector.VectorStoreService;
 import org.exist.storage.journal.JournalManager;
 import org.exist.storage.lock.FileLockService;
 import org.exist.storage.lock.LockManager;
@@ -92,6 +93,7 @@ import java.util.function.Consumer;
 
 import static com.evolvedbinary.j8fu.fsm.TransitionTable.transitionTable;
 import static org.exist.util.ThreadUtils.nameInstanceThreadGroup;
+import static org.exist.util.ThreadUtils.newInstanceDaemonThread;
 import static org.exist.util.ThreadUtils.newInstanceThread;
 
 /**
@@ -273,6 +275,11 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
     private BlobStoreService blobStoreService;
 
     /**
+     * The Vector Store of the database instance.
+     */
+    private VectorStoreService vectorStoreService;
+
+    /**
      * Delay (in ms) for running jobs to return when the database instance shuts down.
      */
     @ConfigurationFieldAsAttribute("wait-before-shutdown")
@@ -364,7 +371,9 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
     private final Lock globalXUpdateLock = new ReentrantLock();
 
     private Subject serviceModeUser = null;
-    private boolean inServiceMode = false;
+    // volatile: enterServiceMode/exitServiceMode write from the caller's thread;
+    // isInServiceMode() can be called from any thread without holding the monitor.
+    private volatile boolean inServiceMode = false;
 
     //the time that the database was started
     private final Calendar startupTime = Calendar.getInstance();
@@ -444,12 +453,10 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
                 dataLock.release();
             }
 
-            if (e instanceof EXistException existException) {
-                throw existException;
-            } else if(e instanceof DatabaseConfigurationException databaseConfigurationException) {
-                throw databaseConfigurationException;
-            } else {
-                throw new EXistException(e);
+            switch (e) {
+                case EXistException existException -> throw existException;
+                case DatabaseConfigurationException databaseConfigurationException -> throw databaseConfigurationException;
+                case null, default -> throw new EXistException(e);
             }
         }
     }
@@ -491,6 +498,7 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
         this.transactionManager = servicesManager.register(new TransactionManager(this, journalManager, systemTaskManager));
 
         this.blobStoreService = servicesManager.register(new BlobStoreImplService());
+        this.vectorStoreService = servicesManager.register(new org.exist.storage.vector.VectorStoreServiceImpl());
 
         this.symbols = servicesManager.register(new SymbolTable());
 
@@ -543,7 +551,7 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
             statusReporter = new StatusReporter(SIGNAL_STARTUP);
             statusObservers.forEach(statusReporter::addObserver);
 
-            final Thread statusThread = newInstanceThread(this, "startup-status-reporter", statusReporter);
+            final Thread statusThread = newInstanceDaemonThread(this, "startup-status-reporter", statusReporter);
             statusThread.start();
 
             // statusReporter may have to be terminated or the thread can/will hang.
@@ -734,7 +742,6 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
 
                 transact.commit(txn);
             } catch(final Exception e) {
-                e.printStackTrace();
                 final String msg = "Initialisation of system collections failed: " + e.getMessage();
                 LOG.error(msg, e);
                 throw new EXistException(msg, e);
@@ -944,6 +951,15 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
     @Override
     public BlobStore getBlobStore() {
         return blobStoreService.getBlobStore();
+    }
+
+    /**
+     * Returns the Vector Store for persistent vector storage.
+     *
+     * @return the Vector Store, or null if not available
+     */
+    public org.exist.storage.vector.VectorStore getVectorStore() {
+        return vectorStoreService != null ? vectorStoreService.getVectorStore() : null;
     }
 
     public SymbolTable getSymbols() {
@@ -1225,18 +1241,25 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
         //No active broker : get one ASAP
 
         while(serviceModeUser != null && subject.isPresent() && !subject.equals(Optional.ofNullable(serviceModeUser))) {
+            if(isShuttingDown()) {
+                break;
+            }
             try {
                 LOG.debug("Db instance is in service mode. Waiting for db to become available again ...");
-                wait();
+                wait(1000);
             } catch(final InterruptedException e) {
                 Thread.currentThread().interrupt();
-                LOG.error("Interrupt detected");
+                LOG.warn("Interrupted while waiting for service mode to end");
+                break;
             }
         }
 
         synchronized(this) {
             //Are there any available brokers ?
             if(inactiveBrokers.isEmpty()) {
+                if(isShuttingDownOrDown()) {
+                    throw new EXistException("BrokerPool is not operational (state: " + status.getCurrentState().name() + ")");
+                }
                 //There are no available brokers. If allowed...
                 if(brokersCount < maxBrokers)
                 //... create one
@@ -1245,11 +1268,15 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
                 } else
                     //... or wait until there is one available
                     while(inactiveBrokers.isEmpty()) {
+                        if(isShuttingDownOrDown()) {
+                            throw new EXistException("BrokerPool is shutting down");
+                        }
                         LOG.debug("waiting for a broker to become available");
                         try {
-                            this.wait();
+                            this.wait(1000);
                         } catch(final InterruptedException e) {
-                            //nothing to be done!
+                            Thread.currentThread().interrupt();
+                            throw new EXistException("Interrupted while waiting for a broker", e);
                         }
                     }
             }
@@ -1400,10 +1427,14 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
         synchronized(this) {
             if(!activeBrokers.isEmpty()) {
                 while(!inServiceMode) {
+                    if(isShuttingDown()) {
+                        break;
+                    }
                     try {
-                        wait();
+                        wait(1000);
                     } catch(final InterruptedException e) {
-                        //nothing to be done
+                        Thread.currentThread().interrupt();
+                        break;
                     }
                 }
             }
@@ -1602,15 +1633,25 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
 
             processMonitor.stopRunningJobs();
 
-            //Shutdown the scheduler
-            scheduler.shutdown(true);
+            // C3 fix (shutdown lifecycle audit, 2026-04-29):
+            // Bound scheduler shutdown so a stuck Quartz job cannot hang the JVM. Wait up to
+            // half of maxShutdownWait for jobs to complete; if the deadline expires, the
+            // implementation logs and force-interrupts running jobs, then shutdown(false)s.
+            // A non-positive maxShutdownWait disables the bound (semantics preserved for
+            // configurations that explicitly opted out via wait-before-shutdown).
+            final long schedulerTimeoutMs = maxShutdownWait > 0 ? maxShutdownWait / 2 : -1L;
+            if (schedulerTimeoutMs > 0) {
+                scheduler.shutdown(schedulerTimeoutMs);
+            } else {
+                scheduler.shutdown(true);
+            }
 
             try {
                 statusReporter = new StatusReporter(SIGNAL_SHUTDOWN);
                 statusObservers.forEach(statusReporter::addObserver);
 
                 synchronized (this) {
-                    final Thread statusThread = newInstanceThread(this, "shutdown-status-reporter", statusReporter);
+                    final Thread statusThread = newInstanceDaemonThread(this, "shutdown-status-reporter", statusReporter);
                     statusThread.start();
 
                     // DW: only in debug mode
@@ -1637,12 +1678,19 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
                                 //Wait until they become inactive...
                                 this.wait(1000);
                             } catch (final InterruptedException e) {
-                                //nothing to be done
+                                Thread.currentThread().interrupt();
+                                LOG.warn("Interrupted while waiting for active brokers to return during shutdown");
+                                // C4 fix (shutdown lifecycle audit, 2026-04-29):
+                                // Surface holders so unflushed transactions are visible in the log
+                                // before we proceed into broker.shutdown() with leases still open.
+                                logActiveBrokerHolders("interrupt");
+                                break;
                             }
 
                             //...or force the shutdown
                             if (maxShutdownWait > -1 && System.currentTimeMillis() - waitStart > maxShutdownWait) {
                                 LOG.warn("Not all threads returned. Forcing shutdown ...");
+                                logActiveBrokerHolders("timeout");
                                 break;
                             }
                         }
@@ -1745,7 +1793,19 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
                 statusReporter.terminate();
                 statusReporter = null;
 
-//                instanceThreadGroup.destroy();
+                // interrupt any remaining threads in the instance thread group
+                // to prevent the JVM from hanging on non-daemon threads
+                try {
+                    // C5 fix (shutdown lifecycle audit, 2026-04-29):
+                    // Surface any threads that survived the structured shutdown so leaks are
+                    // diagnosable. Each named thread here is a candidate for an explicit
+                    // BrokerPoolService.shutdown() rather than relying on this blanket
+                    // ThreadGroup.interrupt() fallback.
+                    logSurvivingInstanceThreads();
+                    instanceThreadGroup.interrupt();
+                } catch (final SecurityException e) {
+                    LOG.warn("Could not interrupt instance thread group: {}", e.getMessage());
+                }
             }
         } finally {
             status.process(Event.FINISHED_SHUTDOWN);
@@ -1853,6 +1913,60 @@ public class BrokerPool extends BrokerPools implements BrokerPoolConstants, Data
             System.err.println(s);
         } catch(final IOException e) {
             LOG.error(e);
+        }
+    }
+
+    /**
+     * Enumerate threads still alive in {@code instanceThreadGroup} immediately before the
+     * blanket {@code interrupt()} fallback, and log them by name and daemon status.
+     *
+     * Audit finding C5 (2026-04-29): {@code ThreadGroup.interrupt()} is a band-aid for any
+     * subsystem that did not register an explicit shutdown via {@code BrokerPoolService}.
+     * Logging the survivors makes the leak visible so it can be fixed at source rather than
+     * masked by the interrupt.
+     */
+    private void logSurvivingInstanceThreads() {
+        try {
+            final Thread[] active = new Thread[instanceThreadGroup.activeCount() + 8];
+            final int found = instanceThreadGroup.enumerate(active, true);
+            for (int i = 0; i < found; i++) {
+                final Thread t = active[i];
+                if (t == null || t == Thread.currentThread() || !t.isAlive()) {
+                    continue;
+                }
+                LOG.warn("Thread '{}' (state={}, daemon={}) still alive in instance thread group at shutdown — will be interrupted",
+                        t.getName(), t.getState(), t.isDaemon());
+            }
+        } catch (final SecurityException e) {
+            LOG.warn("Could not enumerate instance thread group at shutdown: {}", e.getMessage());
+        }
+    }
+
+    /**
+     * Log every thread that still holds an active broker, with its current stack trace.
+     *
+     * Used by the shutdown sequence (audit finding C4) when the {@code activeBrokers} drain
+     * is interrupted or times out — proceeding with {@code broker.shutdown()} while leases
+     * are still open risks unflushed dirty pages, so making the holders visible is critical
+     * for diagnosing the cause on next start.
+     *
+     * @param reason short tag included in the log message ({@code "interrupt"} or {@code "timeout"}).
+     */
+    private void logActiveBrokerHolders(final String reason) {
+        if (activeBrokers.isEmpty()) {
+            return;
+        }
+        LOG.warn("FORCED SHUTDOWN ({}) with {} active broker(s) — recovery may be required on next start",
+                reason, activeBrokers.size());
+        for (final Map.Entry<Thread, DBBroker> entry : activeBrokers.entrySet()) {
+            final Thread holder = entry.getKey();
+            final StringBuilder sb = new StringBuilder();
+            sb.append("Thread '").append(holder.getName()).append("' (state=").append(holder.getState())
+                    .append(", daemon=").append(holder.isDaemon()).append(") still holds a broker:\n");
+            for (final StackTraceElement frame : holder.getStackTrace()) {
+                sb.append("\tat ").append(frame).append('\n');
+            }
+            LOG.warn(sb.toString());
         }
     }
 

@@ -87,7 +87,6 @@ import java.io.*;
 import java.net.URI;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.text.NumberFormat;
 import java.util.*;
 import java.util.function.Function;
@@ -139,6 +138,10 @@ public class NativeBroker implements DBBroker {
 
     private static final String EXCEPTION_DURING_REINDEX = "exception during reindex";
     private static final String DATABASE_IS_READ_ONLY = "Database is read-only";
+    private enum CollectionIndexDropMode {
+        FULL_DROP,
+        CONFIG_ONLY_REINDEX
+    }
 
     public static final String DEFAULT_DATA_DIR = "data";
     public static final int DEFAULT_INDEX_DEPTH = 1;
@@ -227,7 +230,7 @@ public class NativeBroker implements DBBroker {
         this.lockManager = pool.getLockManager();
         LOG.debug("Initializing broker {}", hashCode());
 
-        this.dataDir = config.getProperty(BrokerPool.PROPERTY_DATA_DIR, Paths.get(DEFAULT_DATA_DIR));
+        this.dataDir = config.getProperty(BrokerPool.PROPERTY_DATA_DIR, Path.of(DEFAULT_DATA_DIR));
 
         nodesCountThreshold = config.getInteger(BrokerPool.PROPERTY_NODES_BUFFER);
         if(nodesCountThreshold > 0) {
@@ -591,6 +594,10 @@ public class NativeBroker implements DBBroker {
         }
         pool.getSymbols().backupToArchive(backup);
         pool.getBlobStore().backupToArchive(backup);
+        final org.exist.storage.vector.VectorStore vectorStore = pool.getVectorStore();
+        if (vectorStore != null) {
+            vectorStore.backupToArchive(backup);
+        }
         pool.getIndexManager().backupToArchive(backup);
         //TODO backup counters
         //TODO USE zip64 or tar to create snapshots larger then 4Gb
@@ -720,9 +727,9 @@ public class NativeBroker implements DBBroker {
             // 1) try and load from etc/ dir
             final Path fInitCollectionConfig = pool.getConfiguration().getExistHome()
                     .map(h -> h.resolve("etc").resolve(INIT_COLLECTION_CONFIG))
-                    .orElse(Paths.get("etc").resolve(INIT_COLLECTION_CONFIG));
+                    .orElse(Path.of("etc").resolve(INIT_COLLECTION_CONFIG));
             if (Files.exists(fInitCollectionConfig)) {
-                return Files.readString(fInitCollectionConfig, UTF_8);
+                return Files.readString(fInitCollectionConfig);
             }
 
             // 2) fallback to attempting to load from classpath
@@ -838,7 +845,7 @@ public class NativeBroker implements DBBroker {
             //TODO(AR) below, should we just fall back to recursive descent creating the collection hierarchy in the same manner that getOrCreateCollection used to do?
 
             // 3) No parent collection was previously found in cache so we need to call this function for the parent Collection and then ourselves
-            final Tuple2<Boolean, Collection> newOrExistingParentCollection = getOrCreateCollectionExplicit(transaction, parentCollectionUri, creationAttributes, fireTrigger);
+            getOrCreateCollectionExplicit(transaction, parentCollectionUri, creationAttributes, fireTrigger);
             return getOrCreateCollectionExplicit(transaction, collectionUri, creationAttributes, fireTrigger);
 
         } catch(final ReadOnlyException e) {
@@ -1174,7 +1181,7 @@ public class NativeBroker implements DBBroker {
         } else {
 
             if(!collection.getURI().equalsInternal(uri)) {
-                throw new IOException(String.format("readCollectionEntry: The Collection received from the cache: %s is not the requested: %s", collection.getURI(), uri));
+                throw new IOException("readCollectionEntry: The Collection received from the cache: %s is not the requested: %s".formatted(collection.getURI(), uri));
             }
 
             entry.read(collection);
@@ -1426,7 +1433,6 @@ public class NativeBroker implements DBBroker {
             }
 
             final XmldbURI newDocName = sourceDocument.getFileURI();
-            final XmldbURI targetCollectionUri = targetCollection.getURI();
 
             try(final LockedDocument oldLockedDoc = targetCollection.getDocumentWithLock(this, newDocName, LockMode.WRITE_LOCK)) {
                 final DocumentImpl oldDoc = oldLockedDoc == null ? null : oldLockedDoc.getDocument();
@@ -1788,7 +1794,7 @@ public class NativeBroker implements DBBroker {
             //TODO(AR) this can be executed asynchronously as a task, Do we need to await the completion before unlocking the collection? or just await completion before returning from the first call to _removeCollection?
             // 3) drop indexes for this Collection
             notifyDropIndex(collection);
-            getIndexController().removeCollection(collection, this, false);
+            getIndexController().removeCollection(collection, this, IndexController.CollectionIndexRemovalMode.FULL_DROP);
 
             // 4) remove this Collection from the parent Collection
             if(parentCollection != null) {
@@ -1886,15 +1892,17 @@ public class NativeBroker implements DBBroker {
                 public Object start() {
                     if (doc.getResourceType() == DocumentImpl.XML_FILE) {
                         final NodeHandle node = (NodeHandle) doc.getFirstChild();
-                        domDb.removeAll(transaction, node.getInternalAddress());
+                        if (node != null) {
+                            domDb.removeAll(transaction, node.getInternalAddress());
+                        }
                     }
                     return null;
                 }
             }.run();
 
             // if it is a binary document remove the content from disk
-            if (doc instanceof BinaryDocument) {
-                removeCollectionBinary(transaction, (BinaryDocument)doc);
+            if (doc instanceof BinaryDocument document) {
+                removeCollectionBinary(transaction, document);
             }
 
             docTrigger.afterDeleteDocument(this, transaction, doc.getURI());
@@ -2029,12 +2037,21 @@ public class NativeBroker implements DBBroker {
 
     @Override
     public void reindexCollection(final Txn transaction, final XmldbURI collectionUri) throws PermissionDeniedException, IOException, LockException {
+        reindexCollection(transaction, collectionUri, org.exist.indexing.ReindexScope.ALL);
+    }
+
+    @Override
+    public void reindexCollection(final Txn transaction, final XmldbURI collectionUri, final org.exist.indexing.ReindexScope scope)
+            throws PermissionDeniedException, IOException, LockException {
         if(isReadOnly()) {
             throw new IOException(DATABASE_IS_READ_ONLY);
         }
 
         final XmldbURI fqUri = prepend(collectionUri.toCollectionPathURI());
         final long start = System.currentTimeMillis();
+        // Invalidate collection cache so we load fresh from disk; otherwise a cached collection
+        // may have a stale document list when store+reindex run in separate broker transactions.
+        pool.getCollectionsCache().invalidate(fqUri);
         try(final Collection collection = openCollection(fqUri, LockMode.READ_LOCK)) {
             if (collection == null) {
                 LOG.warn("Collection {} not found!", fqUri);
@@ -2043,7 +2060,10 @@ public class NativeBroker implements DBBroker {
 
             LOG.info("Start indexing collection {}", collection.getURI().toString());
             pool.getProcessMonitor().startJob(ProcessMonitor.ACTION_REINDEX_COLLECTION, collection.getURI());
-            reindexCollection(transaction, collection, IndexMode.STORE);
+            final IndexMode selectedMode = selectCollectionReindexMode(collection, scope);
+            // Reindex traversal intentionally runs with collection READ_LOCKs:
+            // avoid lock escalation while descending into child collections.
+            reindexCollection(transaction, collection, selectedMode, scope);
         } catch(final PermissionDeniedException | IOException e) {
             LOG.error("An error occurred during reindex: {}", e.getMessage(), e);
         } finally {
@@ -2055,20 +2075,46 @@ public class NativeBroker implements DBBroker {
     private void reindexCollection(final Txn transaction,
             @EnsureLocked(mode=LockMode.READ_LOCK) final Collection collection, final IndexMode mode)
             throws PermissionDeniedException, IOException, LockException {
+        reindexCollection(transaction, collection, mode, org.exist.indexing.ReindexScope.ALL);
+    }
+
+    private void reindexCollection(final Txn transaction,
+            @EnsureLocked(mode=LockMode.READ_LOCK) final Collection collection, final IndexMode mode,
+            final org.exist.indexing.ReindexScope scope)
+            throws PermissionDeniedException, IOException, LockException {
         if(!collection.getPermissionsNoLock().validate(getCurrentSubject(), Permission.WRITE)) {
             throw new PermissionDeniedException("Account " + getCurrentSubject().getName() + " have insufficient privileges on collection " + collection.getURI());
         }
 
         LOG.debug("Reindexing collection {}", collection.getURI());
-        if(mode == IndexMode.STORE) {
-            dropCollectionIndex(transaction, collection, true);
+        if(mode == IndexMode.STORE || mode == IndexMode.REINDEX) {
+            final CollectionIndexDropMode dropMode = mode == IndexMode.REINDEX
+                    ? CollectionIndexDropMode.CONFIG_ONLY_REINDEX
+                    : CollectionIndexDropMode.FULL_DROP;
+            dropCollectionIndex(transaction, collection, dropMode);
         }
 
         // reindex documents
         try {
+            int docCount = 0;
+            // Deterministic reindex order is important for doc()-based indexing expressions:
+            // dependent documents must see fully materialized external documents.
+            final java.util.List<DocumentImpl> docs = new java.util.ArrayList<>();
             for (final Iterator<DocumentImpl> i = collection.iterator(this); i.hasNext(); ) {
-                final DocumentImpl next = i.next();
-                reindexXMLResource(transaction, next, mode);
+                docs.add(i.next());
+            }
+            docs.sort(java.util.Comparator.comparing(d -> d.getFileURI().toString()));
+            for (final DocumentImpl next : docs) {
+                docCount++;
+                LOG.debug("Reindex doc #{}: {}", docCount, next.getFileURI());
+                reindexXMLResource(transaction, next, mode, scope);
+            }
+            LOG.info("Reindex collection {}: iterated {} documents", collection.getURI(), docCount);
+            if (LOG.isDebugEnabled()) {
+                final int skippedCoreRebuildUnits = mode == IndexMode.REINDEX ? docCount : 0;
+                final int rebuiltCoreRebuildUnits = mode == IndexMode.REINDEX ? 0 : docCount;
+                LOG.debug("Reindex counters collection={} scope={} mode={} docsProcessed={} skippedCoreRebuildUnits={} rebuiltCoreRebuildUnits={} rebuiltExtensionRebuildUnits={}",
+                        collection.getURI(), scope, mode, docCount, skippedCoreRebuildUnits, rebuiltCoreRebuildUnits, docCount);
             }
         } catch(final LockException e) {
             LOG.error("LockException while reindexing documents of collection '{}'. Skipping...", collection.getURI(), e);
@@ -2083,7 +2129,7 @@ public class NativeBroker implements DBBroker {
                     if (child == null) {
                         throw new IOException("Collection '" + childUri + "' not found");
                     } else {
-                        reindexCollection(transaction, child, mode);
+                        reindexCollection(transaction, child, mode, scope);
                     }
                 }
             }
@@ -2092,14 +2138,65 @@ public class NativeBroker implements DBBroker {
         }
     }
 
-    private void dropCollectionIndex(final Txn transaction,
-            @EnsureLocked(mode=LockMode.WRITE_LOCK) final Collection collection)
-            throws PermissionDeniedException, IOException, LockException {
-        dropCollectionIndex(transaction, collection, false);
+    /**
+     * Pick the safest reindex mode for the collection/scope combination.
+     *
+     * <p>{@code scope=all} must retain historical behavior and rebuild legacy
+     * value/QName indexes when required by collection configuration changes.
+     * Fast-path {@link IndexMode#REINDEX} remains enabled for targeted extension
+     * reindex scopes.</p>
+     */
+    private IndexMode selectCollectionReindexMode(
+            @EnsureLocked(mode=LockMode.READ_LOCK) final Collection collection,
+            final org.exist.indexing.ReindexScope scope) {
+        if (scope != org.exist.indexing.ReindexScope.ALL) {
+            return IndexMode.REINDEX;
+        }
+        final IndexSpec indexSpec = collection.getIndexConfiguration(this);
+        if (indexSpec == null) {
+            return IndexMode.STORE;
+        }
+        if (indexSpec.hasIndexesByPath() || indexSpec.hasIndexesByQName()) {
+            return IndexMode.STORE;
+        }
+        return indexSpec.hasCustomIndexSpecs() ? IndexMode.REINDEX : IndexMode.STORE;
     }
 
     private void dropCollectionIndex(final Txn transaction,
-            @EnsureLocked(mode=LockMode.WRITE_LOCK) final Collection collection, final boolean reindex)
+            @EnsureLocked(mode=LockMode.READ_LOCK) final Collection collection)
+            throws PermissionDeniedException, IOException, LockException {
+        dropCollectionIndex(transaction, collection, CollectionIndexDropMode.FULL_DROP);
+    }
+
+    /**
+     * Drop index entries for all documents in the collection.
+     *
+     * <p>When {@code reindex} is {@code true} (config-only reindex fast path),
+     * only extension indexes ({@link org.exist.indexing.IndexWorker}s such as
+     * Lucene, new-range, etc.) are dropped via
+     * {@link IndexController#removeCollection}.  The DOM BTree
+     * ({@code dom.dbx}) and legacy value index ({@link NativeValueIndex}) are
+     * left untouched because the document content has not changed — only the
+     * {@code collection.xconf} configuration may have been updated.</p>
+     *
+     * <p>When {@code reindex} is {@code false} (full drop — used by
+     * collection removal and full repair), all indexes are dropped including
+     * DOM BTree entries and the legacy value index.</p>
+     *
+     * @param transaction the current transaction
+     * @param collection  the collection whose indexes should be dropped
+     * @param mode        explicit collection index drop semantics
+     *
+     * <p>Locking contract: caller must hold at least a collection READ lock.
+     * Reindex traversal acquires collections with READ_LOCK to avoid lock
+     * escalation/deadlock risk while still serializing against incompatible
+     * writers. Callers that already hold WRITE_LOCK (e.g. collection removal)
+     * also satisfy this contract.</p>
+     *
+     * @see <a href="https://github.com/eXist-db/exist/issues/572">#572</a>
+     */
+    private void dropCollectionIndex(final Txn transaction,
+            @EnsureLocked(mode=LockMode.READ_LOCK) final Collection collection, final CollectionIndexDropMode mode)
             throws PermissionDeniedException, IOException, LockException {
         if(isReadOnly()) {
             throw new IOException(DATABASE_IS_READ_ONLY);
@@ -2107,26 +2204,33 @@ public class NativeBroker implements DBBroker {
         if(!collection.getPermissionsNoLock().validate(getCurrentSubject(), Permission.WRITE)) {
             throw new PermissionDeniedException("Account " + getCurrentSubject().getName() + " have insufficient privileges on collection " + collection.getURI());
         }
-        notifyDropIndex(collection);
-        getIndexController().removeCollection(collection, this, reindex);
-        for (final Iterator<DocumentImpl> i = collection.iterator(this); i.hasNext(); ) {
-            final DocumentImpl doc = i.next();
-            LOG.debug("Dropping index for document {}", doc.getFileURI());
-            new DOMTransaction(this, domDb, () -> lockManager.acquireBtreeWriteLock(domDb.getLockName())) {
-                @Override
-                public Object start() {
-                    try {
-                        final Value ref = new NodeRef(doc.getDocId());
-                        final IndexQuery query =
-                                new IndexQuery(IndexQuery.TRUNC_RIGHT, ref);
-                        domDb.remove(transaction, query, null);
-                        domDb.flush();
-                    } catch (final TerminatedException | IOException | DBException e) {
-                        LOG.error("Error while removing Document '{}' from Collection index: {}", doc.getURI().lastSegment(), collection.getURI(), e);
+        if (mode == CollectionIndexDropMode.FULL_DROP) {
+            notifyDropIndex(collection);
+        }
+        final IndexController.CollectionIndexRemovalMode removalMode = mode == CollectionIndexDropMode.CONFIG_ONLY_REINDEX
+                ? IndexController.CollectionIndexRemovalMode.CONFIG_ONLY_REINDEX
+                : IndexController.CollectionIndexRemovalMode.FULL_DROP;
+        getIndexController().removeCollection(collection, this, removalMode);
+        if (mode == CollectionIndexDropMode.FULL_DROP) {
+            for (final Iterator<DocumentImpl> i = collection.iterator(this); i.hasNext(); ) {
+                final DocumentImpl doc = i.next();
+                LOG.debug("Dropping index for document {}", doc.getFileURI());
+                new DOMTransaction(this, domDb, () -> lockManager.acquireBtreeWriteLock(domDb.getLockName())) {
+                    @Override
+                    public Object start() {
+                        try {
+                            final Value ref = new NodeRef(doc.getDocId());
+                            final IndexQuery query =
+                                    new IndexQuery(IndexQuery.TRUNC_RIGHT, ref);
+                            domDb.remove(transaction, query, null);
+                            domDb.flush();
+                        } catch (final TerminatedException | IOException | DBException e) {
+                            LOG.error("Error while removing Document '{}' from Collection index: {}", doc.getURI().lastSegment(), collection.getURI(), e);
+                        }
+                        return null;
                     }
-                    return null;
-                }
-            }.run();
+                }.run();
+            }
         }
     }
 
@@ -2420,7 +2524,6 @@ public class NativeBroker implements DBBroker {
                 }
                 //if (!doc.getMode().validate(getUser(), Permission.READ))
                 //throw new PermissionDeniedException("not allowed to read document");
-                final DocumentImpl doc = lockedDocument.getDocument();
                 return lockedDocument;
             } catch (final LockException e) {
                 LOG.error("Could not acquire lock on document {}", fileName, e);
@@ -2428,6 +2531,67 @@ public class NativeBroker implements DBBroker {
             }
         }
         return null;
+    }
+
+    @Override
+    public @Nullable ExecutableResource getResourceForExecution(XmldbURI docURI) throws PermissionDeniedException {
+        if (docURI == null) {
+            return null;
+        }
+        docURI = prepend(docURI.toCollectionPathURI());
+        final XmldbURI collUri = docURI.removeLastSegment();
+        final XmldbURI docUri = docURI.lastSegment();
+        // a document is only ever resolved for execution, never for writing, so both the collection and
+        // document locks are always read locks (relativeCollectionLockMode(READ_LOCK, READ_LOCK) can only
+        // ever answer READ_LOCK)
+        try (final Collection collection = openCollection(collUri, LockMode.READ_LOCK)) {
+            if (collection == null) {
+                LOG.debug("Collection '{}' not found!", collUri);
+                return null;
+            }
+
+            try {
+                // gate on EXECUTE, not READ: the database reads the source on the caller's behalf
+                final LockedDocument lockedDocument = collection.getDocumentWithLock(this, docUri, LockMode.READ_LOCK, Permission.EXECUTE);
+
+                // NOTE: early release of Collection lock inline with Asymmetrical Locking scheme
+                collection.close();
+
+                if (lockedDocument == null) {
+                    return null;
+                }
+
+                // fail closed: an unknown subject is treated as unable to read the source
+                final Subject currentSubject = getCurrentSubject();
+                final boolean callerCanRead = currentSubject != null
+                        && lockedDocument.getDocument().getPermissions().validate(currentSubject, Permission.READ);
+                return new ExecutableResource(lockedDocument, callerCanRead);
+            } catch (final LockException e) {
+                throw new PermissionDeniedException(e);
+            }
+        }
+    }
+
+    @Override
+    public Optional<Long> getDocumentLastModified(XmldbURI docURI) throws PermissionDeniedException {
+        if (docURI == null) {
+            return Optional.empty();
+        }
+        docURI = prepend(docURI.toCollectionPathURI());
+        final XmldbURI collUri = docURI.removeLastSegment();
+        final XmldbURI docUri = docURI.lastSegment();
+        try (final Collection collection = openCollection(collUri, LockMode.READ_LOCK)) {
+            if (collection == null) {
+                return Optional.empty();
+            }
+
+            // no permission check on the document: staleness is not a permission question, and only
+            // the timestamp is handed out — see DBBroker#getDocumentLastModified
+            return collection.getDocumentLastModified(docUri);
+        } catch (final LockException e) {
+            LOG.error("Could not acquire lock on document {}", docURI, e);
+            return Optional.empty();
+        }
     }
 
     @Override
@@ -2447,8 +2611,8 @@ public class NativeBroker implements DBBroker {
         final BlobStore blobStore = pool.getBlobStore();
         try (final InputStream is = blobStore.get(transaction, blob.getBlobId())) {
             if (is != null) {
-                if (os instanceof UnsynchronizedByteArrayOutputStream) {
-                    ((UnsynchronizedByteArrayOutputStream)os).write(is);
+                if (os instanceof UnsynchronizedByteArrayOutputStream stream) {
+                    stream.write(is);
                 } else {
                     copy(is, os);
                 }
@@ -2511,7 +2675,8 @@ public class NativeBroker implements DBBroker {
             final Value key = new CollectionStore.DocumentKey(collectionInternalAccess.getId());
             final IndexQuery query = new IndexQuery(IndexQuery.TRUNC_RIGHT, key);
 
-            collectionsDb.query(query, new DocumentCallback(collectionInternalAccess));
+            final DocumentCallback callback = new DocumentCallback(collectionInternalAccess);
+            collectionsDb.query(query, callback);
         } catch(final LockException e) {
             LOG.error("Failed to acquire lock on {}", FileUtils.fileName(collectionsDb.getFile()));
         } catch(final IOException | BTreeException | TerminatedException e) {
@@ -2793,9 +2958,9 @@ public class NativeBroker implements DBBroker {
      */
     private static void copyModeAcl(final DBBroker broker, final Permission srcPermissions, final Permission destPermissions) throws PermissionDeniedException {
         PermissionFactory.chmod(broker, destPermissions, Optional.of(srcPermissions.getMode()), Optional.empty());
-        if (srcPermissions instanceof SimpleACLPermission && destPermissions instanceof SimpleACLPermission) {
+        if (srcPermissions instanceof SimpleACLPermission permission && destPermissions instanceof SimpleACLPermission) {
             PermissionFactory.chacl(destPermissions, newAcl ->
-                ((SimpleACLPermission)newAcl).copyAclOf((SimpleACLPermission)srcPermissions)
+                ((SimpleACLPermission)newAcl).copyAclOf(permission)
             );
         }
     }
@@ -3064,8 +3229,8 @@ public class NativeBroker implements DBBroker {
 
     @Override
     public void removeResource(final Txn tx, final DocumentImpl doc) throws IOException, PermissionDeniedException {
-        if (doc instanceof BinaryDocument) {
-            removeBinaryResource(tx, (BinaryDocument) doc);
+        if (doc instanceof BinaryDocument document) {
+            removeBinaryResource(tx, document);
         } else {
             removeXMLResource(tx, doc);
         }
@@ -3122,26 +3287,38 @@ public class NativeBroker implements DBBroker {
      * Reindex the nodes in the document. This method will either reindex all
      * descendant nodes of the passed node, or all nodes below some level of
      * the document if node is null.
+     *
+     * When reindexing a single document (e.g. via {@code xmldb:reindex($col, $doc)}),
+     * runs with the reindexing flag set so index workers remove existing entries
+     * before adding new ones, avoiding duplicates. See GitHub #3977.
      */
     @Override
     public void reindexXMLResource(final Txn transaction, final DocumentImpl doc, final IndexMode mode) {
-        final StreamListener listener = getIndexController().getStreamListener(doc, ReindexMode.STORE);
-        getIndexController().startIndexDocument(transaction, listener);
-        try {
-            final NodeList nodes = doc.getChildNodes();
-            for (int i = 0; i < nodes.getLength(); i++) {
-                final IStoredNode<?> node = (IStoredNode<?>) nodes.item(i);
-                try (final INodeIterator iterator = getNodeIterator(node)) {
-                    iterator.next();
-                    scanNodes(transaction, iterator, node, new NodePath2(), mode, listener);
-                } catch (final IOException ioe) {
-                    LOG.error("Unable to close node iterator", ioe);
+        reindexXMLResource(transaction, doc, mode, org.exist.indexing.ReindexScope.ALL);
+    }
+
+    @Override
+    public void reindexXMLResource(final Txn transaction, final DocumentImpl doc, final IndexMode mode,
+            final org.exist.indexing.ReindexScope scope) {
+        getIndexController().runWithReindexing(() -> {
+            final StreamListener listener = getIndexController().getStreamListener(doc, ReindexMode.STORE);
+            getIndexController().startIndexDocument(transaction, listener);
+            try {
+                final NodeList nodes = doc.getChildNodes();
+                for (int i = 0; i < nodes.getLength(); i++) {
+                    final IStoredNode<?> node = (IStoredNode<?>) nodes.item(i);
+                    try (final INodeIterator iterator = getNodeIterator(node)) {
+                        iterator.next();
+                        scanNodes(transaction, iterator, node, new NodePath2(), mode, listener);
+                    } catch (final IOException ioe) {
+                        LOG.error("Unable to close node iterator", ioe);
+                    }
                 }
+            } finally {
+                getIndexController().endIndexDocument(transaction, listener);
             }
-        } finally {
-            getIndexController().endIndexDocument(transaction, listener);
-        }
-        flush();
+            flush();
+        }, scope);
     }
 
     @Override
@@ -3171,9 +3348,9 @@ public class NativeBroker implements DBBroker {
                     return null;
                 }
             }.run();
-            // create a copy of the old doc to copy the nodes into it
-            final DocumentImpl tempDoc = new DocumentImpl(null, doc.getDocId(), doc);
-            tempDoc.copyOf(this, doc, doc);
+            // Create a copy of the old document to copy the nodes into it.
+            // tempDoc serves as a storage container for the child nodes.
+            final DocumentImpl tempDoc = new DocumentImpl(null, pool, doc.getCollection(), doc.getDocId(), doc.getFileURI());
             final StreamListener listener = getIndexController().getStreamListener(doc, ReindexMode.STORE);
             // copy the nodes
             final NodeList nodes = doc.getChildNodes();
@@ -3198,15 +3375,17 @@ public class NativeBroker implements DBBroker {
                     return null;
                 }
             }.run();
+            // assign new child nodes from the temporary document
             doc.copyChildren(tempDoc);
             doc.setSplitCount(0);
             doc.setPageCount(tempDoc.getPageCount());
+            // store defragmented document
             storeXMLResource(transaction, doc);
             closeDocument();
             if (LOG.isDebugEnabled()) {
                 LOG.debug("Defragmentation took {} ms.", (System.currentTimeMillis() - start));
             }
-        } catch(final PermissionDeniedException | IOException e) {
+        } catch(final IOException e) {
             LOG.error(e);
         }
     }
@@ -3690,7 +3869,9 @@ public class NativeBroker implements DBBroker {
         if(node.getNodeType() == Node.ELEMENT_NODE) {
             currentPath.addNode(node);
         }
-        indexNode(transaction, node, currentPath, mode);
+        if (mode != IndexMode.REINDEX) {
+            indexNode(transaction, node, currentPath, mode);
+        }
         if(listener != null) {
             switch(node.getNodeType()) {
                 case Node.TEXT_NODE:
@@ -3722,7 +3903,9 @@ public class NativeBroker implements DBBroker {
             }
         }
         if(node.getNodeType() == Node.ELEMENT_NODE) {
-            endElement(node, currentPath, null, mode == IndexMode.REMOVE);
+            if (mode != IndexMode.REINDEX) {
+                endElement(node, currentPath, null, mode == IndexMode.REMOVE);
+            }
             if(listener != null) {
                 listener.endElement(transaction, (ElementImpl) node, currentPath);
             }
@@ -3932,8 +4115,7 @@ public class NativeBroker implements DBBroker {
                 }
             }
         } catch(final DBException dbe) {
-            dbe.printStackTrace();
-            LOG.error(dbe);
+            LOG.error("DBException during NativeBroker sync", dbe);
         }
     }
 
@@ -4310,9 +4492,14 @@ public class NativeBroker implements DBBroker {
     private final class DocumentCallback implements BTreeCallback {
 
         private final Collection.InternalAccess collectionInternalAccess;
+        private int documentCount = 0;
 
         private DocumentCallback(final Collection.InternalAccess collectionInternalAccess) {
             this.collectionInternalAccess = collectionInternalAccess;
+        }
+
+        int getDocumentCount() {
+            return documentCount;
         }
 
         @Override
@@ -4330,6 +4517,7 @@ public class NativeBroker implements DBBroker {
                 }
 
                 collectionInternalAccess.addDocument(doc);
+                documentCount++;
             } catch(final EXistException | IOException e) {
                 LOG.error("Exception while reading document data", e);
             }

@@ -24,6 +24,7 @@ package org.exist.storage;
 
 import org.exist.EXistException;
 import org.exist.collections.Collection;
+import org.exist.indexing.ReindexScope;
 import org.exist.collections.triggers.TriggerException;
 import org.exist.security.PermissionDeniedException;
 import org.exist.storage.lock.Lock;
@@ -57,10 +58,11 @@ public class ReindexTest {
     private static final XmldbURI DOCUMENT_WITH_CHILD_NODES_NAME = XmldbURI.create("doc-child-nodes.xml");
 
     private static final String DOCUMENT_WITH_CHILD_NODES_XML =
-            "<?some-pi?>\n" +
-                    "<!-- 1 --><!-- 2 -->\n" +
-                    "<n/>\n" +
-                    "<!-- 3 -->";
+            """
+            <?some-pi?>
+            <!-- 1 --><!-- 2 -->
+            <n/>
+            <!-- 3 -->""";
 
     private static final XmldbURI ELEMENT_WITH_CHILD_NODES_COLLECTION = XmldbURI.create("/db/reindex-element-child-nodes-test");
     private static final XmldbURI ELEMENT_WITH_CHILD_NODES_NAME = XmldbURI.create("elem-child-nodes.xml");
@@ -89,6 +91,18 @@ public class ReindexTest {
         reindex(ELEMENT_WITH_CHILD_NODES_COLLECTION);
 
         reindexElementChildren_checkNodes();
+    }
+
+    @Test
+    public void reindexCollectionWithScope() throws EXistException, PermissionDeniedException, IOException, LockException {
+        final BrokerPool pool = existEmbeddedServer.getBrokerPool();
+        try (final DBBroker broker = pool.get(Optional.of(pool.getSecurityManager().getSystemSubject()));
+             final Txn transaction = pool.getTransactionManager().beginTransaction()) {
+            broker.reindexCollection(transaction, DOCUMENT_WITH_CHILD_NODES_COLLECTION, ReindexScope.ALL);
+            broker.reindexCollection(transaction, DOCUMENT_WITH_CHILD_NODES_COLLECTION, ReindexScope.FULLTEXT);
+            broker.reindexCollection(transaction, DOCUMENT_WITH_CHILD_NODES_COLLECTION, ReindexScope.VECTOR);
+            transaction.commit();
+        }
     }
 
     private void reindexDocumentChildNodes_checkNodes() throws EXistException, PermissionDeniedException {

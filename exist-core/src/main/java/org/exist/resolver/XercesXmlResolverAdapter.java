@@ -136,6 +136,28 @@ public class XercesXmlResolverAdapter implements XMLEntityResolver {
     }
 
     /**
+     * As the other overloads, but accepting whichever concrete resolver type {@code
+     * Shared#resolveCatalogArgument} returns -- either an {@link org.xmlresolver.Resolver}
+     * (wrapped via this adapter) or a {@link org.exist.validation.resolver.SearchResourceResolver}
+     * (which already implements Xerces' {@link XMLEntityResolver} directly, so no wrapping is
+     * needed).
+     *
+     * @param xmlReader the Xerces XML Reader
+     * @param resolver the resolver, or null to unset the property
+     *
+     * @throws SAXNotSupportedException if the property is not supported by the XMLReader
+     * @throws SAXNotRecognizedException if the property is not recognised by the XMLReader
+     */
+    public static void setXmlReaderEntityResolver(final XMLReader xmlReader, @Nullable final org.w3c.dom.ls.LSResourceResolver resolver) throws SAXNotSupportedException, SAXNotRecognizedException {
+        switch (resolver) {
+            case null -> setXmlReaderEntityResolver(xmlReader, (XMLEntityResolver) null);
+            case Resolver xmlResolver -> setXmlReaderEntityResolver(xmlReader, xmlResolver);
+            case XMLEntityResolver xmlEntityResolver -> setXmlReaderEntityResolver(xmlReader, xmlEntityResolver);
+            default -> throw new SAXNotSupportedException("Unsupported LSResourceResolver implementation: " + resolver.getClass().getName());
+        }
+    }
+
+    /**
      * Get the underlying resolver.
      *
      * @return the underlying resolver.

@@ -31,7 +31,6 @@ import java.io.*;
 import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Properties;
@@ -86,6 +85,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 import static org.xmldb.api.base.ResourceType.XML_RESOURCE;
 
 public class QueryDialog extends JFrame {
+    @Serial
     private static final long serialVersionUID = 1L;
 
     private static final String LOADING_INDICATOR = "Loading...";
@@ -96,9 +96,9 @@ public class QueryDialog extends JFrame {
 
     private static final AtomicInteger QUERY_THREAD_ID = new AtomicInteger();
 
-    private InteractiveClient client;
+    private final InteractiveClient client;
     private Collection collection;
-    private Properties properties;
+    private final Properties properties;
     private RSyntaxTextArea query;
     private JTabbedPane resultTabs;
     private RSyntaxTextArea resultDisplay;
@@ -107,7 +107,7 @@ public class QueryDialog extends JFrame {
     private RTextScrollPane exprDisplayScrollPane;
     private JComboBox<String> collections = null;
     private SpinnerNumberModel count;
-    private DefaultComboBoxModel<String> history = new DefaultComboBoxModel<>();
+    private final DefaultComboBoxModel<String> history = new DefaultComboBoxModel<>();
     private JTextField statusMessage;
     private JProgressBar progress;
     private JButton submitButton;
@@ -120,7 +120,7 @@ public class QueryDialog extends JFrame {
         this.collection = collection;
         this.properties = properties;
         this.client = client;
-        this.setIconImage(InteractiveClient.getExistIcon(getClass()).getImage());
+        InteractiveClient.setExistImage(getClass(), this::setIconImage);
         setupComponents(loadedFromDb);
         pack();
     }
@@ -410,7 +410,7 @@ public class QueryDialog extends JFrame {
     private void open() {
         final String workDir = properties.getProperty(WORKING_DIR, System.getProperty("user.dir"));
         final JFileChooser chooser = new JFileChooser();
-        chooser.setCurrentDirectory(Paths.get(workDir).toFile());
+        chooser.setCurrentDirectory(Path.of(workDir).toFile());
         chooser.setMultiSelectionEnabled(false);
         chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
         chooser.addChoosableFileFilter(new MimeTypeFileFilter("application/xquery"));
@@ -446,7 +446,7 @@ public class QueryDialog extends JFrame {
         final String workDir = properties.getProperty(WORKING_DIR, System.getProperty("user.dir"));
         final JFileChooser chooser = new JFileChooser();
         chooser.setMultiSelectionEnabled(false);
-        chooser.setCurrentDirectory(Paths.get(workDir).toFile());
+        chooser.setCurrentDirectory(Path.of(workDir).toFile());
         chooser.setFileSelectionMode(JFileChooser.FILES_ONLY);
         if ("result".equals(fileCategory)) {
             chooser.addChoosableFileFilter(new MimeTypeFileFilter("application/xhtml+xml"));
@@ -484,8 +484,7 @@ public class QueryDialog extends JFrame {
         resultDisplay.setText("");
 
         final QueryRunnable queryTask = new QueryRunnable(xpath);
-        final Thread queryThread = client.newClientThread("query-" + QUERY_THREAD_ID.getAndIncrement(), queryTask);
-        queryThread.start();
+        new Thread(queryTask).start();
         return queryTask;
     }
 
@@ -576,8 +575,8 @@ public class QueryDialog extends JFrame {
                 final CompiledExpression compiled = service.compile(xpath);
                 final long t1 = System.currentTimeMillis();
                 // Check could also be collection instanceof LocalCollection
-                if (compiled instanceof CompiledXQuery) {
-                    context = ((CompiledXQuery) compiled).getContext();
+                if (compiled instanceof CompiledXQuery compiledXQuery) {
+                    context = compiledXQuery.getContext();
                     runningContext.set(context);
                 }
                 tCompiled = t1 - t0;

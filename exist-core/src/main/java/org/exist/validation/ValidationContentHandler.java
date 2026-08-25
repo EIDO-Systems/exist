@@ -24,39 +24,52 @@ package org.exist.validation;
 
 import org.xml.sax.Attributes;
 import org.xml.sax.SAXException;
+import org.xml.sax.helpers.AttributesImpl;
 import org.xml.sax.helpers.DefaultHandler;
 
 /**
- *  Simple contenthandler to determine the NamespaceUri of
+ * Simple contenthandler to determine the NamespaceUri of
  * the document root node.
- * 
+ *
  * @author Dannes Wessels
  */
 public class ValidationContentHandler extends DefaultHandler {
 
     private boolean isFirstElement = true;
     private String namespaceUri = null;
-    
-    
+    private Attributes rootAttributes = null;
+
     /**
-     * @see org.xml.sax.helpers.DefaultHandler#startElement(String,String,String,Attributes)
+     * @see org.xml.sax.helpers.DefaultHandler#startElement(String, String, String, Attributes)
      */
     @Override
-    public void startElement(String uri, String localName, String qName, 
-                             Attributes attributes) throws SAXException {
-        
-        if(isFirstElement){
-            namespaceUri=uri;
-            isFirstElement=false;
+    public void startElement(final String uri, final String localName, final String qName,
+                             final Attributes attributes) throws SAXException {
+
+        if (isFirstElement) {
+            namespaceUri = uri;
+            // SAX may reuse/mutate the Attributes instance after this call returns, so take
+            // a defensive copy for callers that want to inspect the root element's attributes later.
+            rootAttributes = new AttributesImpl(attributes);
+            isFirstElement = false;
         }
     }
-    
+
     /**
-     *  Get namespace of root element. To be used for reporting.
-     * 
+     * Get namespace of root element. To be used for reporting.
+     *
      * @return Namespace of root element.
      */
-    public String getNamespaceUri(){
+    public String getNamespaceUri() {
         return namespaceUri;
+    }
+
+    /**
+     * Get the attributes of the root element, as seen during parsing.
+     *
+     * @return the root element's attributes, or {@code null} if no element has been seen yet.
+     */
+    public Attributes getRootAttributes() {
+        return rootAttributes;
     }
 }

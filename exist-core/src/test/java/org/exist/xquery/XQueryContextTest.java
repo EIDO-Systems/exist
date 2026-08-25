@@ -240,7 +240,7 @@ public class XQueryContextTest {
             context.declareNamespace("", "new-default");
             fail("empty prefix was rebound");
         } catch (XPathException e) {
-            assertEquals("err:XQST0033 Cannot bind prefix '' to 'new-default' it is already bound to 'default'",
+            assertEquals("err:XQST0066 Cannot bind prefix '' to 'new-default' it is already bound to 'default'",
                     e.getMessage());
             assertEquals("default",  context.staticNamespaces.get(""));
         }
@@ -300,5 +300,71 @@ public class XQueryContextTest {
                     "err:XQST0070 Namespace URI 'http://www.w3.org/XML/1998/namespace' must be bound to the 'xml' prefix",
                     e.getMessage());
         }
+    }
+
+    @Test
+    public void testSetDefaultFunctionNamespaceRejectsXmlNs() {
+        try {
+            final XQueryContext context = new XQueryContext();
+            context.setDefaultFunctionNamespace(XMLConstants.XML_NS_URI);
+            fail("XML namespace was accepted as default function namespace");
+        } catch (XPathException e) {
+            assertEquals(ErrorCodes.XQST0070, e.getErrorCode());
+        }
+    }
+
+    @Test
+    public void testSetDefaultFunctionNamespaceRejectsXmlnsNs() {
+        try {
+            final XQueryContext context = new XQueryContext();
+            context.setDefaultFunctionNamespace(XMLConstants.XMLNS_ATTRIBUTE_NS_URI);
+            fail("XMLNS namespace was accepted as default function namespace");
+        } catch (XPathException e) {
+            assertEquals(ErrorCodes.XQST0070, e.getErrorCode());
+        }
+    }
+
+    @Test
+    public void testSetDefaultElementNamespaceRejectsXmlNs() {
+        try {
+            final XQueryContext context = new XQueryContext();
+            context.setDefaultElementNamespace(XMLConstants.XML_NS_URI, null);
+            fail("XML namespace was accepted as default element namespace");
+        } catch (XPathException e) {
+            assertEquals(ErrorCodes.XQST0070, e.getErrorCode());
+        }
+    }
+
+    @Test
+    public void testSetDefaultElementNamespaceRejectsXmlnsNs() {
+        try {
+            final XQueryContext context = new XQueryContext();
+            context.setDefaultElementNamespace(XMLConstants.XMLNS_ATTRIBUTE_NS_URI, null);
+            fail("XMLNS namespace was accepted as default element namespace");
+        } catch (XPathException e) {
+            assertEquals(ErrorCodes.XQST0070, e.getErrorCode());
+        }
+    }
+
+    @Test
+    public void testRelativizeOrFallbackRealCollectionLoadPathRelativizes() {
+        assertEquals("../bar",
+                XQueryContext.relativizeOrFallback("xmldb:exist:///db/apps/foo", "/db/apps/bar"));
+    }
+
+    @Test
+    public void testRelativizeOrFallbackSyntheticLoadPathFallsBackToSourceCollection() {
+        // Reproduces the eXide unsaved-buffer crash: when a client sends a synthetic load
+        // path like "xmldb:exist://__new__1" for an in-memory query, Path.relativize threw
+        // IllegalArgumentException, surfacing as an XPath compile error and blocking module
+        // imports from unsaved eXide buffers. The fallback restores import resolution.
+        assertEquals("/db/apps/foo",
+                XQueryContext.relativizeOrFallback("xmldb:exist://__new__1", "/db/apps/foo"));
+    }
+
+    @Test
+    public void testRelativizeOrFallbackEmptyLoadPathFallsBackToSourceCollection() {
+        assertEquals("/db/apps/foo",
+                XQueryContext.relativizeOrFallback("", "/db/apps/foo"));
     }
 }

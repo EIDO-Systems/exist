@@ -139,7 +139,7 @@ public class Type {
     static {
         typeCodes.defaultReturnValue(NO_SUCH_VALUE);
     }
-    private final static Int2ObjectMap<IntArraySet> unionTypes = new Int2ObjectArrayMap<>(2);
+    private final static Int2ObjectOpenHashMap<IntArraySet> unionTypes = new Int2ObjectOpenHashMap<>(4, Hash.FAST_LOAD_FACTOR);
     private final static Int2IntOpenHashMap primitiveTypes = new Int2IntOpenHashMap(45, Hash.FAST_LOAD_FACTOR);
     static {
         primitiveTypes.defaultReturnValue(NO_SUCH_VALUE);
@@ -531,11 +531,15 @@ public class Type {
             return false;
         }
 
-        if (unionTypes.containsKey(supertype)) {
-            return subTypeOfUnion(subtype, supertype);
+        // Single get() rather than containsKey() + a redundant get() inside
+        // subTypeOfUnion: halves map traversals on the union dispatch path.
+        final IntArraySet supertypeMembers = unionTypes.get(supertype);
+        if (supertypeMembers != null) {
+            return subTypeOfUnion(subtype, supertype, supertypeMembers);
         }
-        if (unionTypes.containsKey(subtype)) {
-            return unionMembersHaveSuperType(subtype, supertype);
+        final IntArraySet subtypeMembers = unionTypes.get(subtype);
+        if (subtypeMembers != null) {
+            return unionMembersHaveSuperType(subtype, supertype, subtypeMembers);
         }
 
         subtype = superTypes[subtype];
@@ -657,7 +661,10 @@ public class Type {
         if (members == null) {
             return false;
         }
+        return subTypeOfUnion(subtype, unionType, members);
+    }
 
+    private static boolean subTypeOfUnion(final int subtype, final int unionType, final IntArraySet members) {
         // inherited behaviour from {@link #subTypeOf(int, int)}
         // where type is considered a subtype of itself.
         if (subtype == unionType) {
@@ -680,6 +687,13 @@ public class Type {
     public static boolean unionMembersHaveSuperType(final int unionType, final int supertype) {
         final IntArraySet members = unionTypes.get(unionType);
         if (members == null || members.isEmpty()) {
+            return false;
+        }
+        return unionMembersHaveSuperType(unionType, supertype, members);
+    }
+
+    private static boolean unionMembersHaveSuperType(final int unionType, final int supertype, final IntArraySet members) {
+        if (members.isEmpty()) {
             return false;
         }
 
@@ -714,6 +728,109 @@ public class Type {
             throw new IllegalArgumentException("Primitive type is not defined for: " + (typeName != null ? typeName : type));
         }
         return primitiveType;
+    }
+
+    /**
+     * Check if a cast from sourceType to targetType is allowed per XPath F&amp;O 3.1
+     * Section 19 (Casting), Table 6. This implements the casting table that determines
+     * whether a cast between two primitive types is possible (may succeed for some values)
+     * or impossible (will never succeed for any value).
+     *
+     * <p>If the cast is impossible, the caller should raise XPTY0004 rather than
+     * attempting the cast (which would incorrectly raise FORG0001).</p>
+     *
+     * @param sourceType the type constant of the source type
+     * @param targetType the type constant of the target type
+     *
+     * @return true if the cast may succeed (for some values), false if the cast can never succeed
+     */
+    public static boolean isCastable(final int sourceType, final int targetType) {
+        // Casting to/from ITEM, ANY_ATOMIC_TYPE, same type, or string-family types is always allowed
+        if (sourceType == targetType || targetType == ITEM || targetType == ANY_ATOMIC_TYPE
+                || isStringOrUntypedAtomic(sourceType) || isStringOrUntypedAtomic(targetType)) {
+            return true;
+        }
+
+        // Get primitive types for the casting table lookup
+        final int srcPrimitive;
+        final int tgtPrimitive;
+        try {
+            srcPrimitive = primitiveTypeOf(sourceType);
+            tgtPrimitive = primitiveTypeOf(targetType);
+        } catch (final IllegalArgumentException e) {
+            // Unknown type — allow the cast to proceed and let convertTo() handle errors
+            return true;
+        }
+
+        // Same primitive type is always castable; otherwise consult the casting table
+        return srcPrimitive == tgtPrimitive || isPrimitiveCastable(srcPrimitive, tgtPrimitive);
+    }
+
+    private static boolean isStringOrUntypedAtomic(final int type) {
+        return type == UNTYPED_ATOMIC || type == STRING || subTypeOf(type, STRING);
+    }
+
+    /**
+     * Check the XPath F&amp;O 3.1 Section 19, Table 6 casting rules for two
+     * primitive types. Returns true for 'M' (may) or 'Y' (yes) entries,
+     * false for 'N' (no) entries.
+     *
+     * <p>This method assumes the caller has already handled: same-type casts,
+     * string/untypedAtomic sources and targets, and same-primitive-type casts.</p>
+     *
+     * @param srcPrimitive the primitive type of the source
+     * @param tgtPrimitive the primitive type of the target
+     *
+     * @return true if the cast is allowed per the casting table
+     */
+    private static boolean isPrimitiveCastable(final int srcPrimitive, final int tgtPrimitive) {
+        return switch (srcPrimitive) {
+            case FLOAT, DOUBLE, DECIMAL ->
+                    isNumericTarget(tgtPrimitive) || tgtPrimitive == BOOLEAN;
+
+            case BOOLEAN ->
+                    isNumericTarget(tgtPrimitive);
+
+            case DURATION ->
+                    false;
+
+            case DATE_TIME ->
+                    isDateTimeTarget(tgtPrimitive);
+
+            case DATE ->
+                    tgtPrimitive == DATE_TIME || isGregorianTarget(tgtPrimitive);
+
+            case TIME, G_YEAR_MONTH, G_YEAR, G_MONTH_DAY, G_DAY, G_MONTH, ANY_URI ->
+                    false;
+
+            case HEX_BINARY ->
+                    tgtPrimitive == BASE64_BINARY;
+
+            case BASE64_BINARY ->
+                    tgtPrimitive == HEX_BINARY;
+
+            case QNAME ->
+                    tgtPrimitive == NOTATION;
+
+            case NOTATION ->
+                    tgtPrimitive == QNAME;
+
+            default -> true;
+        };
+    }
+
+    private static boolean isNumericTarget(final int tgtPrimitive) {
+        return tgtPrimitive == FLOAT || tgtPrimitive == DOUBLE || tgtPrimitive == DECIMAL;
+    }
+
+    private static boolean isDateTimeTarget(final int tgtPrimitive) {
+        return tgtPrimitive == DATE || tgtPrimitive == TIME || isGregorianTarget(tgtPrimitive);
+    }
+
+    private static boolean isGregorianTarget(final int tgtPrimitive) {
+        return tgtPrimitive == G_YEAR_MONTH || tgtPrimitive == G_YEAR
+                || tgtPrimitive == G_MONTH_DAY || tgtPrimitive == G_DAY
+                || tgtPrimitive == G_MONTH;
     }
 
     /**

@@ -287,13 +287,24 @@ public class Collations {
             // com.ibm.icu.text.RuleBasedCollator
             final String uriClassName = uri.substring("java:".length());
             try {
-                final Class<?> collatorClass = Class.forName(uriClassName);
+                Class<?> collatorClass = null;
+                final ClassLoader contextClassLoader = Thread.currentThread().getContextClassLoader();
+                if (contextClassLoader != null) {
+                    try {
+                        collatorClass = Class.forName(uriClassName, true, contextClassLoader);
+                    } catch (final ClassNotFoundException e) {
+                        // Fall back to the defining class loader below.
+                    }
+                }
+                if (collatorClass == null) {
+                    collatorClass = Class.forName(uriClassName);
+                }
                 if (!Collator.class.isAssignableFrom(collatorClass)) {
                     final String msg = "The specified collator class '" + collatorClass.getName() + "' is not a subclass of com.ibm.icu.text.Collator";
                     logger.error(msg);
                     throw new XPathException(expression, ErrorCodes.FOCH0002, msg);
                 }
-                collator = (Collator) collatorClass.newInstance();
+                collator = (Collator) collatorClass.getDeclaredConstructor().newInstance();
             } catch (final Exception e) {
                 final String msg = "The specified collator class " + uriClassName + " could not be found";
                 logger.error(msg);
@@ -344,12 +355,42 @@ public class Collations {
      *
      * @throws UnsupportedOperationException if ICU4J does not support collation
      */
-    public static int compare(@Nullable final Collator collator, final String s1,final  String s2) {
+    public static int compare(@Nullable final Collator collator, final String s1, final String s2) {
         if (collator == null) {
-            return s1 == null ? (s2 == null ? 0 : -1) : s1.compareTo(s2);
+            if (s1 == null) {
+                return s2 == null ? 0 : -1;
+            }
+            return compareByCodepoint(s1, s2);
         } else {
             return collator.compare(s1, s2);
         }
+    }
+
+    /**
+     * Compares two strings by Unicode codepoints rather than UTF-16 code units.
+     * {@link String#compareTo(String)} compares {@code char} (UTF-16) values, which gives
+     * incorrect ordering for supplementary characters (U+10000 and above) that are encoded
+     * as surrogate pairs.
+     *
+     * @param a the first string to compare.
+     * @param b the second string to compare.
+     * @return a negative integer, zero, or a positive integer if {@code a} is less than,
+     *     equal to, or greater than {@code b} by codepoint order.
+     */
+    private static int compareByCodepoint(final String a, final String b) {
+        int i1 = 0;
+        int i2 = 0;
+        while (i1 < a.length() && i2 < b.length()) {
+            final int cp1 = a.codePointAt(i1);
+            final int cp2 = b.codePointAt(i2);
+            if (cp1 != cp2) {
+                return cp1 - cp2;
+            }
+            i1 += Character.charCount(cp1);
+            i2 += Character.charCount(cp2);
+        }
+        // Shorter string is less; equal length means equal
+        return (a.length() - i1) - (b.length() - i2);
     }
 
     /**
@@ -465,53 +506,6 @@ public class Collations {
                 return searchIterator.first();
             }
         }
-    }
-
-    /**
-     * Get a Collator with the provided settings.
-     *
-     * @param fallback Determines whether the processor uses a fallback
-     *     collation if a conformant collation is not available.
-     * @param lang language code: a string in the lexical space of xs:language.
-     * @param strength The collation strength as defined in UCA.
-     * @param maxVariable Indicates that all characters in the specified group
-     *     and earlier groups are treated as "noise" characters to be handled
-     *     as defined by the alternate parameter. "space" | "punct" | "symbol".
-     *     | "currency".
-     * @param alternate Controls the handling of characters such as spaces and
-     *     hyphens; specifically, the "noise" characters in the groups selected
-     *     by the maxVariable parameter. "non-ignorable" | "shifted" |
-     *     "blanked".
-     * @param backwards indicates that the last accent in the string is the
-     *     most significant.
-     * @param normalization Indicates whether strings are converted to
-     *     normalization form D.
-     * @param caseLevel When used with primary strength, setting caseLevel has
-     *     the effect of ignoring accents while taking account of case.
-     * @param caseFirst Indicates whether upper-case precedes lower-case or
-     *     vice versa.
-     * @param numeric When numeric is specified, a sequence of consecutive
-     *     digits is interpreted as a number, for example chap2 sorts before
-     *     chap12.
-     * @param reorder Determines the relative ordering of text in different
-     *     scripts; for example the value digit,Grek,Latn indicates that
-     *     digits precede Greek letters, which precede Latin letters.
-     * @param decomposition The decomposition
-     *
-     * @return The collator of null if a Collator could not be retrieved
-     *
-     * @throws XPathException if an error occurs whilst getting the Collator
-     */
-    private static @Nullable Collator getCollationFromParams(
-            final boolean fallback, @Nullable final String lang,
-            @Nullable final String version, @Nullable final String strength,
-            final String maxVariable, final String alternate,
-            final boolean backwards, final boolean normalization,
-            final boolean caseLevel, @Nullable final String caseFirst,
-            final boolean numeric, @Nullable final String reorder,
-            @Nullable final String decomposition) throws XPathException {
-        return getCollationFromParams(fallback, lang, version, strength, maxVariable, alternate, backwards, normalization,
-                                      caseLevel, caseFirst, numeric, reorder, decomposition, null);
     }
 
     /**

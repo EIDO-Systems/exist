@@ -24,6 +24,7 @@ package org.exist.xquery.functions.fn.transform;
 
 import net.sf.saxon.s9api.XdmNode;
 import org.exist.xquery.value.NodeValue;
+import org.w3c.dom.Attr;
 import org.w3c.dom.Document;
 import org.w3c.dom.Node;
 
@@ -63,18 +64,43 @@ public class TreeUtils {
     static List<Integer> treeIndex(final Node node) {
         final Node parent = node.getParentNode();
         if (parent == null) {
-            return new ArrayList<>();
+          final List<Integer> index = new ArrayList<>();
+          // The root element in an xdmDocument always has index 0 within the document node.
+          // org.exist.dom.memtree.NodeImpl.getParentNode() can return null for a non-document node,
+          // if it was constructed.
+          // This was introduced in 4ce606a08e719b9aabd730a9af6e05ea7485f38e to fix
+          // https://github.com/eXist-db/exist/issues/1463
+          // In this case, we initialize the nodeIndex with the missing index 0
+          // in order to construct a valid xdmDocument.
+          if (! (node instanceof Document)) {
+            index.add(0);
+          }
+          return index;
         }
         final List<Integer> index = treeIndex(parent);
-        Node sibling = node.getPreviousSibling();
+        Node sibling = previousSiblingNotAttribute(node);
         int position = 0;
         while (sibling != null) {
             position += 1;
-            sibling = sibling.getPreviousSibling();
+            sibling = previousSiblingNotAttribute(sibling);
         }
         index.add(position);
 
         return index;
+    }
+
+    /**
+     * A org.exist.dom.persistent.StoredNode returns attributes of an element as previous siblings of the element's children.
+     * This is not compatible with the way xdmNodeAtIndex works, so we need to compensate for this.
+     * @param node
+     * @return the previous sibling of `node` that is not an attribute.
+     */
+    private static Node previousSiblingNotAttribute(Node node) {
+      Node sibling = node.getPreviousSibling();
+      if (sibling instanceof Attr) {
+        return null;
+      }
+      return sibling;
     }
 
     static XdmNode xdmNodeAtIndex(final XdmNode xdmNode, final List<Integer> index) {

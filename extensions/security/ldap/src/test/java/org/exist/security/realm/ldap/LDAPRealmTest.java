@@ -58,7 +58,7 @@ public class LDAPRealmTest {
 	 */
 	@BeforeClass
 	public static void setUpBeforeClass() throws Exception {
-		try (final InputStream is = new UnsynchronizedByteArrayInputStream(config.getBytes(UTF_8))) {
+		try (final InputStream is = UnsynchronizedByteArrayInputStream.builder().setByteArray(config.getBytes(UTF_8)).get()) {
 			Configuration config = Configurator.parse(is);
 			realm = new LDAPRealm(null, config);
 		}
@@ -74,7 +74,7 @@ public class LDAPRealmTest {
 	/**
 	 * Test method for {@link org.exist.security.realm.ldap.LDAPRealm#authenticate(java.lang.String, java.lang.Object)}.
 	 */
-	@Ignore
+	@Ignore("Requires external LDAP server")
 	@Test
 	public void testAuthenticate() {
 		Account account = null;

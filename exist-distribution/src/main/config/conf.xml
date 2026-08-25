@@ -25,10 +25,14 @@
             serializer
             transformer
             validation
+                entity-resolver
+                grammar-cache
             xquery
                 builtin-modules
                     module
             xupdate
+            vector-models (optional)
+                model
     
     Any unique attributes specified can also be overridden using a Java system 
     property, typically specified on the command line, of the form:
@@ -54,7 +58,7 @@
         - http://exist-db.org/exist/apps/doc/documentation.xml
 
 -->
-<exist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../../../../schema/conf.xsd">
+<exist xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:noNamespaceSchemaLocation="../schema/conf.xsd" schemaVersion="2.6.0">
 
     <!-- 
         Configures the database backend.
@@ -195,12 +199,12 @@
                 <!--
                     Trigger for registering the GNU Crypto JCE Provider with Java
                 -->
-                <trigger class="org.exist.security.BouncyCastleJceProviderStartupTrigger"/>
+                <trigger enabled="yes" class="org.exist.security.BouncyCastleJceProviderStartupTrigger"/>
 
                 <!--
                     Trigger for registering eXists XML:DB URL handler with Java
                 -->
-                <trigger class="org.exist.protocolhandler.URLStreamHandlerStartupTrigger">
+                <trigger enabled="yes" class="org.exist.protocolhandler.URLStreamHandlerStartupTrigger">
                     <!-- Keeps stream data on disk (temporary files are used for XML documents) -->
                     <parameter name="mode" value="disk"/>
 
@@ -208,12 +212,12 @@
                     <parameter name="mode" value="memory"/>
                 </trigger>
 
-                <!-- 
-                    EXQuery RESTXQ trigger to load the RESTXQ Registry at startup time 
+                <!--
+                    EXQuery RESTXQ trigger to load the RESTXQ Registry at startup time
                 -->
-                <trigger class="org.exist.extensions.exquery.restxq.impl.RestXqStartupTrigger"/>
-                
-                <!-- 
+                <trigger enabled="yes" class="org.exist.extensions.exquery.restxq.impl.RestXqStartupTrigger"/>
+
+                <!--
                     AutoDeploymentTrigger will install any .xar application package it finds
                     in the autodeploy directory unless the application has already been installed
                     in the db.
@@ -229,8 +233,8 @@
 
                         * dir
                             An absolute path to the directory which contains the XARs to autodeploy.
-                -->   
-                <trigger class="org.exist.repo.AutoDeploymentTrigger">
+                -->
+                <trigger enabled="yes" class="org.exist.repo.AutoDeploymentTrigger">
 
                     <!-- parameter name="ignore-autodeploy-system-property" value="true"/ -->
 
@@ -248,7 +252,7 @@
                     mode "rwxrwx___" (0770) with mime-type "application/xquery". 
                     The names of the scripts must end with ".xq", ".xqy" or ".xquery".
                 -->
-                <!--<trigger class="org.exist.collections.triggers.XQueryStartupTrigger"/>-->
+                <trigger class="org.exist.collections.triggers.XQueryStartupTrigger" enabled="no"/>
                     
             </triggers>
         </startup>
@@ -543,9 +547,7 @@
         <modules>
             <module id="ngram-index" file="ngram.dbx" n="3" class="org.exist.indexing.ngram.NGramIndex"/>
                     
-            <!--
-            <module id="spatial-index" connectionTimeout="10000" flushAfter="300" class="org.exist.indexing.spatial.GMLHSQLIndex"/>
-            -->
+            <module id="spatial-index" connectionTimeout="10000" flushAfter="300" class="org.exist.indexing.spatial.GMLHSQLIndex" enabled="no"/>
             
             <module id="lucene-index" buffer="32" class="org.exist.indexing.lucene.LuceneIndex" />
 
@@ -567,9 +569,7 @@
                  distribution of elements in the database, which can be used 
                  by the query optimizer for additional optimizations. 
             -->
-            <!--
-            <module id="index-stats" file="stats.dbx" class="org.exist.storage.statistics.IndexStatistics" />
-            -->
+            <module id="index-stats" file="stats.dbx" class="org.exist.storage.statistics.IndexStatistics" enabled="no"/>
         </modules>
 
         <!--
@@ -662,8 +662,7 @@
                 backup  Set to "yes" to create a backup whenever the job runs, not just
                         when it detects errors.
         -->
-        <!--
-        <job type="system" name="check1" 
+        <job type="system" enabled="no" name="check1"
             class="org.exist.storage.ConsistencyCheckTask"
             cron-trigger="0 0 * * * ?">
             <parameter name="output" value="export"/>
@@ -672,21 +671,17 @@
             <parameter name="incremental-check" value="no"/>
             <parameter name="max" value="2"/>
         </job>
-        -->
-        
-        <!-- 
-            Automatically creates a copy of the database .dbx files every 2 minutes
-            
-            Parameters:
-            output-dir:
-                The directory into which the copy will be written
-        -->
+
         <!--
-        <job type="system" name="databackup" 
-            class="org.exist.storage.DataBackup" period="120000">
-            <parameter name="output-dir" value="backup" />
-        </job>
+            Automatically creates a copy of the database .dbx files every 2 minutes.
+
+            Parameters:
+                output-dir  The directory into which the copy will be written.
         -->
+        <job type="system" enabled="no" name="databackup"
+            class="org.exist.storage.DataBackup" period="120000">
+            <parameter name="output-dir" value="backup"/>
+        </job>
         
     </scheduler>
 
@@ -902,6 +897,22 @@
         <entity-resolver>
             <catalog uri="${WEBAPP_HOME}/WEB-INF/catalog.xml"/>
         </entity-resolver>
+
+        <!--
+            Configure XML parser grammar cache. The grammar cache contains
+            compiled versions of XSD and DTD files.
+
+            - size
+                Specifies the maximum number of entries the cache may contain.
+                Value  0: grammars will be evicted immediately after being loaded into the cache.
+                Value -1: no maximum for the number of cached grammars.
+
+            - expire
+                The time (in seconds) after which an unused grammar should expire and be removed
+                from the grammar pool.
+                Value -1: grammars will not be removed over time.
+        -->
+        <grammar-cache size="500" expire="3600"/>
     </validation>
 
     <!-- 
@@ -934,8 +945,7 @@
                 xmldb:xcollection() should return an empty sequence when an 
                 XML resource can not be retrieved. 
     -->
-    <!-- TODO: add attribute 'enabled="yes/no"' -->
-    <xquery enable-java-binding="no" disable-deprecated-functions="no" 
+    <xquery enable-java-binding="no" disable-deprecated-functions="no"
             enable-query-rewriting="yes" backwardCompatible="no" 
             enforce-index-use="strict"
             raise-error-on-failed-retrieval="no">
@@ -963,6 +973,8 @@
                 <parameter name="evalDisabled" value="false"/>
             </module>
             <module uri="http://exist-db.org/xquery/validation" class="org.exist.xquery.functions.validation.ValidationModule"/>
+            <module uri="http://exist-db.org/xquery/websocket" class="org.exist.xquery.functions.websocket.WebSocketModule"/>
+            <module uri="http://exist-db.org/xquery/console" class="org.exist.xquery.functions.websocket.ConsoleCompatModule"/>
             <module uri="http://exist-db.org/xquery/xmldb" class="org.exist.xquery.functions.xmldb.XMLDBModule">
                 <!-- set to false to disable the use of xs:anyURI as a $contents value for xmldb:store and xmldb:store-as-binary function -->
                 <parameter name="allowAnyUri" value="false"/>
@@ -976,20 +988,19 @@
             <module uri="http://exist-db.org/xquery/ngram"  class="org.exist.xquery.modules.ngram.NGramModule"/>
             <module uri="http://exist-db.org/xquery/range"  class="org.exist.xquery.modules.range.RangeIndexModule"/>
             <module uri="http://exist-db.org/xquery/sort"   class="org.exist.xquery.modules.sort.SortModule"/>
-            <!--
-            <module uri="http://exist-db.org/xquery/spatial" class="org.exist.xquery.modules.spatial.SpatialModule"/>
-            -->
+            <module uri="http://exist-db.org/xquery/vector" class="org.exist.xquery.modules.vector.VectorModule" enabled="no"/>
+            <module uri="http://exist-db.org/xquery/spatial" class="org.exist.xquery.modules.spatial.SpatialModule" enabled="no"/>
 
 
             <!--
                 Extensions
             -->
             <module uri="http://exist-db.org/xquery/contentextraction"  class="org.exist.contentextraction.xquery.ContentExtractionModule"/>
-            <!-- module uri="http://exist-db.org/xquery/exiftool"  class="org.exist.exiftool.xquery.ExiftoolModule">
+            <module uri="http://exist-db.org/xquery/exiftool" class="org.exist.exiftool.xquery.ExiftoolModule" enabled="no">
                 <parameter name="perl-path" value="/usr/bin/perl" description="file system path to the perl executable"/>
                 <parameter name="exiftool-path" value="/usr/bin/exiftool" description="file system path to the exiftool perl script"/>
-            </module -->
-            <module uri="http://expath.org/ns/http-client" class="org.expath.exist.HttpClientModule"/>
+            </module>
+            <module uri="http://expath.org/ns/http-client" class="org.exist.xquery.modules.httpclient.HttpClientModule"/>
             <module uri="http://expath.org/ns/zip" class="org.expath.exist.ZipModule"/>
             <module uri="http://exquery.org/ns/request" class="org.exist.extensions.exquery.modules.request.RequestModule"/>
             <module uri="http://exquery.org/ns/restxq" class="org.exist.extensions.exquery.restxq.impl.xquery.RestXqModule"/>
@@ -1028,13 +1039,13 @@
             <module uri="http://exist-db.org/xquery/compression" class="org.exist.xquery.modules.compression.CompressionModule"/>
             <module uri="http://exist-db.org/xquery/counter" class="org.exist.xquery.modules.counter.CounterModule"/>
             <module uri="http://exist-db.org/xquery/cqlparser" class="org.exist.xquery.modules.cqlparser.CQLParserModule"/>
-            <!-- module uri="http://exist-db.org/xquery/exi" class="org.exist.xquery.modules.exi.ExiModule"/ -->
+            <module uri="http://exist-db.org/xquery/exi" class="org.exist.xquery.modules.exi.ExiModule" enabled="no"/>
             <module uri="http://exist-db.org/xquery/repo" class="org.exist.xquery.modules.expathrepo.ExpathPackageModule"/>
             <module uri="http://exist-db.org/xquery/file" class="org.exist.xquery.modules.file.FileModule"/>
             <module uri="http://exist-db.org/xquery/image" class="org.exist.xquery.modules.image.ImageModule"/>
             <module uri="http://exist-db.org/xquery/jndi" class="org.exist.xquery.modules.jndi.JNDIModule"/>
             <module uri="http://exist-db.org/xquery/mail" class="org.exist.xquery.modules.mail.MailModule"/>
-            <!-- module uri="http://exist-db.org/xquery/oracle" class="org.exist.xquery.modules.oracle.OracleModule"/ -->
+            <module uri="http://exist-db.org/xquery/oracle" class="org.exist.xquery.modules.oracle.OracleModule" enabled="no"/>
             <module uri="http://exist-db.org/xquery/persistentlogin" class="org.exist.xquery.modules.persistentlogin.PersistentLoginModule"/>
             <module uri="http://exist-db.org/xquery/process" class="org.exist.xquery.modules.process.ProcessModule"/>
             <module uri="http://exist-db.org/xquery/scheduler" class="org.exist.xquery.modules.scheduler.SchedulerModule"/>
@@ -1136,4 +1147,15 @@
         -->
         <content-file-pool size="10" max-idle="5"/>
     </rpc-server>
+
+    <!--
+    Global vector embedding model registry. When vector-field or vector:embed
+    omits model-path, the registry supplies path and dimension. Add models here
+    to use custom or additional embedding models; they appear in vector:models().
+    -->
+    <!--
+    <vector-models>
+        <model id="all-MiniLM-L6-v2" path="onnx-models/all-MiniLM-L6-v2" dimension="384"/>
+    </vector-models>
+    -->
 </exist>

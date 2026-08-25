@@ -789,8 +789,8 @@ public abstract class Serializer implements XMLReader {
         } else {
             // if stylesheet is relative, add path to the
             // current collection and normalize
-            if (doc != null && doc instanceof DocumentImpl) {
-                stylesheetUri = ((DocumentImpl) doc).getCollection().getURI().resolveCollectionPath(stylesheetUri).normalizeCollectionPath();
+            if (doc != null && doc instanceof DocumentImpl impl) {
+                stylesheetUri = impl.getCollection().getURI().resolveCollectionPath(stylesheetUri).normalizeCollectionPath();
             }
 
             // load stylesheet from eXist
@@ -825,7 +825,8 @@ public abstract class Serializer implements XMLReader {
 
             // restore handlers
             receiver = oldReceiver;
-            factory.get().setURIResolver(null);
+            // Saxon 12 rejects null URIResolver; reset to default identity resolver
+            factory.get().setURIResolver((href, base) -> null);
         }
         LOG.debug("compiling stylesheet took {}", System.currentTimeMillis() - start);
         if (templates != null) {
@@ -862,8 +863,8 @@ public abstract class Serializer implements XMLReader {
             final ReceiverToSAX filter;
             if (processXInclude) {
                 final Receiver xincludeReceiver = xinclude.getReceiver();
-                if (xincludeReceiver != null && xincludeReceiver instanceof SAXSerializer) {
-                    filter = new ReceiverToSAX((SAXSerializer) xincludeReceiver);
+                if (xincludeReceiver != null && xincludeReceiver instanceof SAXSerializer serializer) {
+                    filter = new ReceiverToSAX(serializer);
                 } else {
                     filter = (ReceiverToSAX) xincludeReceiver;
                 }

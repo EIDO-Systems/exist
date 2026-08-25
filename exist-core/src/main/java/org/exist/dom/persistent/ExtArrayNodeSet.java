@@ -464,12 +464,12 @@ public class ExtArrayNodeSet extends AbstractArrayNodeSet implements DocumentSet
 
     @Override
     public boolean contains(final Item item) {
-        if (item instanceof Node) {
+        if (item instanceof Node node) {
             @Nullable final Document doc;
-            if (item instanceof Document) {
-                doc = (Document) item;
+            if (item instanceof Document document) {
+                doc = document;
             } else {
-                doc = ((Node) item).getOwnerDocument();
+                doc = node.getOwnerDocument();
             }
 
             if (doc == null || !(doc instanceof DocumentImpl || doc instanceof org.exist.dom.memtree.DocumentImpl)) {
@@ -477,8 +477,8 @@ public class ExtArrayNodeSet extends AbstractArrayNodeSet implements DocumentSet
             }
 
             final int docId;
-            if (doc instanceof DocumentImpl) {
-                docId = ((DocumentImpl) doc).getDocId();
+            if (doc instanceof DocumentImpl impl) {
+                docId = impl.getDocId();
             } else {
                 docId = (int) ((org.exist.dom.memtree.DocumentImpl) doc).getDocId();
             }
@@ -620,14 +620,14 @@ public class ExtArrayNodeSet extends AbstractArrayNodeSet implements DocumentSet
                             if(Expression.NO_CONTEXT_ID != contextId) {
                                 nb.addContextNode(contextId, na);
                             } else {
-                                nb.copyContext(na);
+                                NodeProxy.propagatePredicateContextFrom(nb, na, contextId);
                             }
                             result.add(nb);
                         } else {
                             if(Expression.NO_CONTEXT_ID != contextId) {
                                 na.addContextNode(contextId, nb);
                             } else {
-                                na.copyContext(nb);
+                                NodeProxy.propagatePredicateContextFrom(na, nb, contextId);
                             }
                             result.add(na);
                         }
@@ -846,11 +846,7 @@ public class ExtArrayNodeSet extends AbstractArrayNodeSet implements DocumentSet
                         add = includeSelf;
                     }
                     if(add) {
-                        if(Expression.NO_CONTEXT_ID != contextId) {
-                            ancestor.deepCopyContext(array[i], contextId);
-                        } else {
-                            ancestor.copyContext(array[i]);
-                        }
+                        NodeProxy.propagatePredicateContextFrom(ancestor, array[i], contextId);
                         ancestor.addMatches(array[i]);
                         foundOne = true;
                     }
@@ -891,11 +887,7 @@ public class ExtArrayNodeSet extends AbstractArrayNodeSet implements DocumentSet
                         switch(mode) {
 
                             case NodeSet.DESCENDANT:
-                                if(Expression.NO_CONTEXT_ID != contextId) {
-                                    array[i].deepCopyContext(parent, contextId);
-                                } else {
-                                    array[i].copyContext(parent);
-                                }
+                                NodeProxy.propagatePredicateContextFrom(array[i], parent, contextId);
                                 if(copyMatches) {
                                     array[i].addMatches(parent);
                                 }
@@ -903,11 +895,7 @@ public class ExtArrayNodeSet extends AbstractArrayNodeSet implements DocumentSet
                                 break;
 
                             case NodeSet.ANCESTOR:
-                                if(Expression.NO_CONTEXT_ID != contextId) {
-                                    parent.deepCopyContext(array[i], contextId);
-                                } else {
-                                    parent.copyContext(array[i]);
-                                }
+                                NodeProxy.propagatePredicateContextFrom(parent, array[i], contextId);
                                 if(copyMatches) {
                                     parent.addMatches(array[i]);
                                 }
@@ -957,22 +945,14 @@ public class ExtArrayNodeSet extends AbstractArrayNodeSet implements DocumentSet
                             switch(mode) {
 
                                 case NodeSet.DESCENDANT:
-                                    if(Expression.NO_CONTEXT_ID != contextId) {
-                                        array[i].deepCopyContext(parent, contextId);
-                                    } else {
-                                        array[i].copyContext(parent);
-                                    }
+                                    NodeProxy.propagatePredicateContextFrom(array[i], parent, contextId);
                                     array[i].addMatches(parent);
                                     result.add(array[i]);
                                     break;
 
                                 case NodeSet.ANCESTOR:
-                                    if(Expression.NO_CONTEXT_ID != contextId) {
-                                        //parent.addContextNode(contextId, array[i]);
-                                        parent.deepCopyContext(array[i], contextId);
-                                    } else {
-                                        parent.copyContext(array[i]);
-                                    }
+                                    //parent.addContextNode(contextId, array[i]);
+                                    NodeProxy.propagatePredicateContextFrom(parent, array[i], contextId);
                                     parent.addMatches(array[i]);
                                     result.add(parent, 1);
                                     break;

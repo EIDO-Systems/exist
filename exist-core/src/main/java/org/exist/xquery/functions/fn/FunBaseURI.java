@@ -21,7 +21,6 @@
  */
 package org.exist.xquery.functions.fn;
 
-import org.apache.commons.lang3.ArrayUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.exist.xquery.*;
 import org.exist.xquery.value.*;
@@ -29,6 +28,7 @@ import org.w3c.dom.Node;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.Set;
 
 import static org.exist.xquery.FunctionDSL.optParam;
 import static org.exist.xquery.FunctionDSL.returnsOpt;
@@ -67,8 +67,23 @@ public class FunBaseURI extends BasicFunction {
             FS_PARAM_NODE
     );
 
+    // Namespace node does not exist in xquery, hence left out of array.
+    private static final Set<Short> CANDIDATE_NODE_TYPES = Set.of(
+            Node.DOCUMENT_NODE, Node.ELEMENT_NODE, Node.ATTRIBUTE_NODE, Node.TEXT_NODE,
+            Node.COMMENT_NODE, Node.PROCESSING_INSTRUCTION_NODE
+    );
+
     public FunBaseURI(XQueryContext context, FunctionSignature signature) {
         super(context, signature);
+    }
+
+    @Override
+    public boolean isContextDependent() {
+        // 0-arg base-uri() reads the focus; static-base-uri() reads the
+        // call-site's static base URI from the XQueryContext. Both forms
+        // must close over the lookup-site context when wrapped via
+        // fn:function-lookup or a named function reference.
+        return isCalledAs(FS_STATIC_BASE_URI) || getArgumentCount() == 0;
     }
 
     /* (non-Javadoc)
@@ -119,13 +134,8 @@ public class FunBaseURI extends BasicFunction {
         final Node node = nodeValue.getNode();
         final short type = node.getNodeType();
 
-        // Namespace node does not exist in xquery, hence left out of array.
-        final short[] quickStops = {Node.ELEMENT_NODE, Node.ATTRIBUTE_NODE,
-                Node.PROCESSING_INSTRUCTION_NODE, Node.COMMENT_NODE, Node.TEXT_NODE,
-                Node.DOCUMENT_NODE};
-
         // Quick escape
-        if (!ArrayUtils.contains(quickStops, type)) {
+        if (!CANDIDATE_NODE_TYPES.contains(type)) {
             return Sequence.EMPTY_SEQUENCE;
         }
 

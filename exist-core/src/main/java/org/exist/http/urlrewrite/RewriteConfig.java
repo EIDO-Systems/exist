@@ -31,10 +31,11 @@ import org.exist.dom.persistent.LockedDocument;
 import org.exist.security.PermissionDeniedException;
 import org.exist.storage.DBBroker;
 import org.exist.storage.lock.Lock.LockMode;
-import org.exist.thirdparty.net.sf.saxon.functions.regex.JDK15RegexTranslator;
-import org.exist.thirdparty.net.sf.saxon.functions.regex.RegexSyntaxException;
-import org.exist.thirdparty.net.sf.saxon.functions.regex.RegularExpression;
+import net.sf.saxon.regex.JavaRegularExpression;
+import net.sf.saxon.str.StringView;
+import net.sf.saxon.trans.XPathException;
 import org.exist.util.XMLReaderPool;
+import org.exist.util.SchemaVersion;
 import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.Constants;
 import org.exist.xquery.Expression;
@@ -54,7 +55,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Optional;
@@ -141,9 +141,9 @@ public class RewriteConfig {
                  * on the server name.  If there is a condition on the server name and the names do not
                  * match, then ignore this ControllerForward.
                  */
-                if (action instanceof ControllerForward) {
+                if (action instanceof ControllerForward forward) {
                     if (serverName != null) {
-                        final String controllerServerName = ((ControllerForward) action).getServerName();
+                        final String controllerServerName = forward.getServerName();
                         if (controllerServerName != null) {
                             if (!serverName.equalsIgnoreCase(controllerServerName)) {
                                 continue;
@@ -185,11 +185,17 @@ public class RewriteConfig {
             }
         } else {
             try {
-                final Path d = Paths.get(urlRewrite.getConfig().getServletContext().getRealPath("/")).normalize();
-                final Path configFile = d.resolve(controllerConfig);
-                if (Files.isReadable(configFile)) {
-                    final Document doc = parseConfig(configFile);
-                    parse(doc);
+                final String rootRealPath = urlRewrite.getConfig().getServletContext().getRealPath("/");
+                // the Servlet API permits getRealPath() to return null when the webapp is not
+                // exploded on disk (e.g. served from a packed/embedded context); in that case
+                // there is no filesystem controller-config.xml to load.
+                if (rootRealPath != null) {
+                    final Path d = Path.of(rootRealPath).normalize();
+                    final Path configFile = d.resolve(controllerConfig);
+                    if (Files.isReadable(configFile)) {
+                        final Document doc = parseConfig(configFile);
+                        parse(doc);
+                    }
                 }
             } catch (final ParserConfigurationException | IOException | SAXException e) {
                 throw new ServletException("Failed to parse controller.xml: " + e.getMessage(), e);
@@ -200,13 +206,14 @@ public class RewriteConfig {
 
     private void parse(final Document doc) throws ServletException {
         final Element root = doc.getDocumentElement();
+        SchemaVersion.logDocumentVersion(LOG, root, SchemaVersion.CONTROLLER_CONFIG, "controller-config.xml");
         Node child = root.getFirstChild();
         while (child != null) {
             final String ns = child.getNamespaceURI();
             if (child.getNodeType() == Node.ELEMENT_NODE && Namespaces.EXIST_NS.equals(ns)) {
                 final Element elem = (Element) child;
                 final String pattern = elem.getAttribute(PATTERN_ATTRIBUTE);
-                if (pattern == null) {
+                if (pattern.isEmpty()) {
                     throw new ServletException("Action in controller-config.xml has no pattern: " + elem.toString());
                 }
                 final URLRewrite urw = parseAction(urlRewrite.getConfig(), pattern, elem);
@@ -232,7 +239,7 @@ public class RewriteConfig {
                  * as an attribute on the ControllerForward object.
                  */
                 final String serverName = action.getAttribute(SERVER_NAME_ATTRIBUTE);
-                if (serverName != null && !serverName.isEmpty()) {
+                if (!serverName.isEmpty()) {
                     cf.setServerName(serverName);
                 }
                 rewrite = cf;
@@ -272,16 +279,13 @@ public class RewriteConfig {
 
         private Mapping(String regex, final URLRewrite action) throws ServletException {
             try {
-                final int options = RegularExpression.XML11 | RegularExpression.XPATH30;
-                int flagbits = 0;
-
-                final List<RegexSyntaxException> warnings = new ArrayList<>();
-                regex = JDK15RegexTranslator.translate(regex, options, flagbits, warnings);
+                final JavaRegularExpression javaRegex = new JavaRegularExpression(StringView.of(regex), "");
+                regex = javaRegex.getJavaRegularExpression();
 
                 this.pattern = Pattern.compile(regex, 0);
                 this.action = action;
                 this.matcher = pattern.matcher("");
-            } catch (final RegexSyntaxException e) {
+            } catch (final XPathException e) {
                 throw new ServletException("Syntax error in regular expression specified for path. " +
                         e.getMessage(), e);
             }

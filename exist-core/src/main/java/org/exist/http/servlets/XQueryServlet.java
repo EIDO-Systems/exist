@@ -39,6 +39,7 @@ import org.exist.util.MimeTable;
 import org.exist.util.serializer.XQuerySerializer;
 import org.exist.xmldb.XmldbURI;
 import org.exist.xquery.*;
+import org.xml.sax.SAXException;
 import org.exist.xquery.value.Item;
 import org.exist.xquery.value.Sequence;
 
@@ -52,11 +53,11 @@ import javax.xml.transform.OutputKeys;
 import java.io.IOException;
 import java.io.OutputStreamWriter;
 import java.io.PrintWriter;
+import java.io.Serial;
 import java.net.URISyntaxException;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Optional;
 import java.util.Properties;
 
@@ -91,7 +92,8 @@ import java.util.Properties;
  * @author <a href="mailto:wolfgang@exist-db.org">Wolfgang Meier</a>
  */
 public class XQueryServlet extends AbstractExistHttpServlet {
-    
+
+    @Serial
     private static final long serialVersionUID = 5266794852401553015L;
 
     private static final Logger LOG = LogManager.getLogger(XQueryServlet.class);
@@ -180,8 +182,8 @@ public class XQueryServlet extends AbstractExistHttpServlet {
 
             process(request, response);
         } finally {
-            if (request != null && request instanceof HttpServletRequestWrapper) {
-                ((HttpServletRequestWrapper)request).close();
+            if (request != null && request instanceof HttpServletRequestWrapper wrapper) {
+                wrapper.close();
             }
         }
     }
@@ -215,8 +217,8 @@ public class XQueryServlet extends AbstractExistHttpServlet {
 
             process(request, response);
         } finally {
-            if (request != null && request instanceof HttpServletRequestWrapper) {
-                ((HttpServletRequestWrapper)request).close();
+            if (request != null && request instanceof HttpServletRequestWrapper wrapper) {
+                wrapper.close();
             }
         }
     }
@@ -238,12 +240,17 @@ public class XQueryServlet extends AbstractExistHttpServlet {
     protected void process(HttpServletRequest request, HttpServletResponse response) throws ServletException, IOException {
         //first, adjust the path
         String path = request.getPathTranslated();
-        if(path == null) {
-            path = request.getRequestURI().substring(request.getContextPath().length());
-            final int p = path.lastIndexOf(';');
+        // the request path relative to the context, e.g. "/db/apps/optimize.xql" -- kept around
+        // (regardless of whether pathTranslated already gave us a disk path) so that a request
+        // which cannot be resolved to a file on disk can still be tried against the database.
+        String contextRelativePath = request.getRequestURI().substring(request.getContextPath().length());
+        {
+            final int p = contextRelativePath.lastIndexOf(';');
             if(p != Constants.STRING_NOT_FOUND)
-                {path = path.substring(0, p);}
-            path = getServletContext().getRealPath(path);
+                {contextRelativePath = contextRelativePath.substring(0, p);}
+        }
+        if(path == null) {
+            path = getServletContext().getRealPath(contextRelativePath);
         }
         
         //second, perform descriptor actions
@@ -327,9 +334,9 @@ public class XQueryServlet extends AbstractExistHttpServlet {
         final Object urlAttrib = request.getAttribute(ATTR_XQUERY_URL);
         if (sourceAttrib != null) {
             String s;
-            if (sourceAttrib instanceof Item)
+            if (sourceAttrib instanceof Item item)
                 try {
-                    s = ((Item) sourceAttrib).getStringValue();
+                    s = item.getStringValue();
                 } catch (final XPathException e) {
                     throw new ServletException("Failed to read XQuery source string from " +
                         "request attribute '" + ATTR_XQUERY_SOURCE + "': " + e.getMessage(), e);
@@ -341,7 +348,9 @@ public class XQueryServlet extends AbstractExistHttpServlet {
             
         } else if (urlAttrib != null) {
             try(final DBBroker broker = getPool().get(Optional.ofNullable(user))) {
-                source = SourceFactory.getSource(broker, moduleLoadPath, urlAttrib.toString(), true);
+                // resolved for execution: a stored query needs EXECUTE, not READ. The ?_source view
+                // below still validates READ, so an unreadable query can be run but not viewed
+                source = SourceFactory.getSourceForExecution(broker, moduleLoadPath, urlAttrib.toString(), true);
                 if (source == null) {
                     final String msg = "Could not read source: context=" + moduleLoadPath + ", location=" + urlAttrib;
                     getLog().error(msg);
@@ -354,18 +363,32 @@ public class XQueryServlet extends AbstractExistHttpServlet {
                 sendError(output, "Error", e.getMessage());
             }
         } else {
-            final Path f = Paths.get(path);
-            if(!Files.isReadable(f)) {
-                response.setStatus(HttpServletResponse.SC_NOT_FOUND);
-                sendError(output, "Cannot read source file", path);
-                return;
+            final Path f = path == null ? null : Path.of(path);
+            if (f != null && Files.isReadable(f)) {
+                source = new FileSource(f, Charset.forName(encoding), true);
+            } else {
+                // No readable file on disk (or no disk path at all -- the Servlet API allows both
+                // HttpServletRequest#getPathTranslated() and ServletContext#getRealPath(String) to
+                // return null, which happens e.g. for a request forwarded to a resource that only
+                // exists in the database). Fall back to resolving it there before giving up.
+                // See https://github.com/eXist-db/exist/issues/6615
+                try (final DBBroker broker = getPool().get(Optional.ofNullable(user))) {
+                    source = SourceFactory.getSourceForExecution(broker, null, contextRelativePath, true);
+                } catch (final EXistException | IOException | PermissionDeniedException e) {
+                    getLog().error(e.getMessage(), e);
+                }
+                if (source == null) {
+                    response.setStatus(HttpServletResponse.SC_NOT_FOUND);
+                    sendError(output, "Cannot read source file", path != null ? path : contextRelativePath);
+                    return;
+                }
             }
-            source = new FileSource(f, Charset.forName(encoding), true);
         }
-        
+
         if (source == null) {
             response.setStatus(HttpServletResponse.SC_NOT_FOUND);
             sendError(output, "Source not found", path);
+            return;
         }
         
         boolean reportErrors = false;
@@ -388,9 +411,9 @@ public class XQueryServlet extends AbstractExistHttpServlet {
 //                System.out.println("path="+path);
                 if(descriptor.allowSource(path)) {
 
-                    if (source instanceof DBSource) {
+                    if (source instanceof DBSource bSource) {
                         try {
-                            ((DBSource) source).validate(user, Permission.READ);
+                            bSource.validate(user, Permission.READ);
                         } catch (final PermissionDeniedException e) {
                             if (getDefaultUser().equals(user)) {
                                 getAuthenticator().sendChallenge(request, response);
@@ -432,23 +455,32 @@ public class XQueryServlet extends AbstractExistHttpServlet {
             CompiledXQuery query = getPool().getXQueryPool().borrowCompiledXQuery(broker, source);
 
             XQueryContext context;
-            if (query==null) {
+            if (query == null) {
                context = new XQueryContext(getPool());
                context.setModuleLoadPath(moduleLoadPath);
-               try {
-            	   query = xquery.compile(context, source);
-                   
-               } catch (final XPathException ex) {
-                  throw new EXistException("Cannot compile xquery: "+ ex.getMessage(), ex);
-                  
-               } catch (final IOException ex) {
-                  throw new EXistException("I/O exception while compiling xquery: " + ex.getMessage() ,ex);
-               }
-               
             } else {
                context = query.getContext();
                context.setModuleLoadPath(moduleLoadPath);
                context.prepareForReuse();
+            }
+
+            // a caller which may execute but not read the query must not learn anything about its
+            // source from a failure. Recomputed per request, as the compiled query is pooled and
+            // shared between users, and set before compiling: a compile error never reaches
+            // XQuery#execute, which computes the level for a runtime failure
+            context.setErrorDisclosure(ErrorDisclosure.of(source, user));
+
+            if (query == null) {
+               try {
+            	   query = xquery.compile(context, source);
+
+               } catch (final XPathException ex) {
+                  final XPathException disclosed = ErrorDisclosure.disclose(context, ex);
+                  throw new EXistException("Cannot compile xquery: "+ disclosed.getMessage(), disclosed);
+
+               } catch (final IOException ex) {
+                  throw new EXistException("I/O exception while compiling xquery: " + ex.getMessage() ,ex);
+               }
             }
 
             final Properties outputProperties = new Properties();
@@ -483,7 +515,12 @@ public class XQueryServlet extends AbstractExistHttpServlet {
             Sequence resultSequence;
             try {
                 resultSequence = xquery.execute(broker, query, null, outputProperties);
-                
+
+            } catch (final XPathException e) {
+                // a read-blind caller learns only that the execution failed; the real error is
+                // logged server-side with a correlation id
+                throw ErrorDisclosure.disclose(context, e);
+
             } finally {
                 context.runCleanupTasks();
                 getPool().getXQueryPool().returnCompiledXQuery(source, query);
@@ -517,10 +554,22 @@ public class XQueryServlet extends AbstractExistHttpServlet {
             
             if (requestAttr != null && (XmldbURI.API_LOCAL.equals(collectionURI.getApiName())) ) {
                 request.setAttribute(requestAttr, resultSequence);
-                
+
             } else {
-                XQuerySerializer serializer = new XQuerySerializer(broker, outputProperties, output);
-                serializer.serialize(resultSequence);
+                final XQuerySerializer serializer = new XQuerySerializer(broker, outputProperties, output);
+                try {
+                    // serialization runs the tail of a lazily-evaluated query, so a runtime failure can
+                    // surface here rather than in execute() above; it must be filtered just the same
+                    serializer.serialize(resultSequence);
+                } catch (final XPathException e) {
+                    throw ErrorDisclosure.disclose(context, e);
+                } catch (final SAXException e) {
+                    final XPathException generic = ErrorDisclosure.discloseGeneric(context, e);
+                    if (generic != null) {
+                        throw generic;
+                    }
+                    throw e;
+                }
             }
             
 		} catch (final PermissionDeniedException e) {
@@ -569,9 +618,9 @@ public class XQueryServlet extends AbstractExistHttpServlet {
         if(obj == null)
             {return null;}
         
-        if(obj instanceof Sequence)
+        if(obj instanceof Sequence sequence)
             try {
-                return ((Sequence)obj).getStringValue();
+                return sequence.getStringValue();
             } catch (final XPathException e) {
                 return null;
             }

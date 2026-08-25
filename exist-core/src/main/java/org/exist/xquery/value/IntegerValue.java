@@ -407,13 +407,13 @@ public class IntegerValue extends NumericValue {
      */
     @Override
     public ComputableValue div(final ComputableValue other) throws XPathException {
-        if (other instanceof IntegerValue) {
-            if (((IntegerValue) other).isZero()) {
+        if (other instanceof IntegerValue integerValue) {
+            if (integerValue.isZero()) {
                 throw new XPathException(getExpression(), ErrorCodes.FOAR0001, "division by zero");
             }
             //http://www.w3.org/TR/xpath20/#mapping : numeric; but xs:decimal if both operands are xs:integer
             final BigDecimal d = new BigDecimal(value);
-            final BigDecimal od = new BigDecimal(((IntegerValue) other).value);
+            final BigDecimal od = new BigDecimal(integerValue.value);
             final int scale = Math.max(18, Math.max(d.scale(), od.scale()));
             return new DecimalValue(getExpression(), d.divide(od, scale, RoundingMode.HALF_DOWN));
         } else {
@@ -455,7 +455,10 @@ public class IntegerValue extends NumericValue {
 
     @Override
     public NumericValue abs() throws XPathException {
-        return new IntegerValue(getExpression(), value.abs(), type);
+        // Per XPath F&O fn:abs: if $arg is derived from xs:integer, the result is
+        // xs:integer, not the derived subtype. Preserving the subtype caused
+        // FORG0001 for abs(xs:int(-2147483648)) and abs(xs:negativeInteger(...)).
+        return new IntegerValue(getExpression(), value.abs());
     }
 
     @Override
@@ -560,11 +563,6 @@ public class IntegerValue extends NumericValue {
         } else {
             return getType() > other.getType() ? 1 : -1;
         }
-    }
-
-    @Override
-    public int hashCode() {
-        return value.hashCode();
     }
 
     //TODO(AR) this is not a very good serialization method, the size of the IntegerValue is unbounded and may not fit in 8 bytes.

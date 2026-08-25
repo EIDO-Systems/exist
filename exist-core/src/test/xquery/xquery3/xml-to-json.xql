@@ -23,7 +23,63 @@ xquery version "3.1";
 
 module namespace xtj="http://exist-db.org/xquery/test/xml-to-json";
 
+declare default element namespace "http://www.w3.org/2005/xpath-functions";
 declare namespace test="http://exist-db.org/xquery/xqsuite";
+
+declare variable $xtj:collection-name := "xml-to-json-test";
+declare variable $xtj:collection := "/db/" || $xtj:collection-name;
+
+declare variable $xtj:simple-map :=
+    <map xmlns="http://www.w3.org/2005/xpath-functions">
+        <string key="hello">world</string>
+    </map>;
+
+declare variable $xtj:nested-structure :=
+    <map xmlns="http://www.w3.org/2005/xpath-functions">
+        <string key="name">test</string>
+        <number key="count">42</number>
+        <boolean key="active">true</boolean>
+        <null key="nothing"/>
+        <array key="items">
+            <string>a</string>
+            <number>1</number>
+            <boolean>false</boolean>
+        </array>
+    </map>;
+
+declare
+    %test:setUp
+function xtj:setup() {
+    xmldb:create-collection("/db", $xtj:collection-name),
+    xmldb:store($xtj:collection, "simple-map.xml", $xtj:simple-map),
+    xmldb:store($xtj:collection, "nested-structure.xml", $xtj:nested-structure)
+};
+
+declare
+    %test:tearDown
+function xtj:teardown() {
+    xmldb:remove($xtj:collection)
+};
+
+declare
+    %test:assertEquals('{"hello":"world"}')
+function xtj:xml-to-json-stored-simple-map() {
+    fn:xml-to-json(doc($xtj:collection || "/simple-map.xml")/*)
+};
+
+declare
+    %test:assertEquals('{"name":"test","count":42,"active":true,"nothing":null,"items":["a",1,false]}')
+function xtj:xml-to-json-stored-nested-structure() {
+    fn:xml-to-json(doc($xtj:collection || "/nested-structure.xml")/*)
+};
+
+declare
+    %test:assertTrue
+function xtj:xml-to-json-stored-matches-in-memory() {
+    let $stored := fn:xml-to-json(doc($xtj:collection || "/simple-map.xml")/*)
+    let $in-memory := fn:xml-to-json($xtj:simple-map)
+    return $stored eq $in-memory
+};
 
 declare
     %test:assertEmpty
@@ -306,8 +362,7 @@ declare
     %test:assertEquals('{"pcM9qSs":"YbFYeK10.e01xgS1DEJFaxxvm372Ru","wh5J8qAmnZx8WAHnHCeBpM":-1270212191.431,"ssEhB3U9zZhRNNH2Vm":["A","OIQwg4ICB9fkzihwpE.cQv1",false]}')
 function xtj:xml-to-json-generatedFromSchema-1() {
     let $node :=
-<map xmlns="http://www.w3.org/2005/xpath-functions"
- xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<map xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <string key="pcM9qSs" escaped-key="false" escaped="false">YbFYeK10.e01xgS1DEJFaxxvm372Ru</string>
     <number key="wh5J8qAmnZx8WAHnHCeBpM" escaped-key="false">-1270212191.431</number>
     <array key="ssEhB3U9zZhRNNH2Vm" escaped-key="false">
@@ -323,8 +378,7 @@ declare
     %test:assertEquals('{"v-DhbQUwZO3zpW":[{"fRcP.5e9btnuR3dOnd":[false,"_aQ",null],"yVlXSsyg1pPatQ7ilEaSSA9":"DVbrO2wpIRJimrskkRk.7wg1Gvh","K9xGofqp":true,"PatQ7iK9xGof":false},11145450.201,584608693.252],"IU6lSWbLYTzc3QvIVAdmJ.CG":1600374222.048,"_o3UT5zEy":"WFUwRRW5Jc3rdwKCoO8iV3RYDu_5"}')
 function xtj:xml-to-json-generatedFromSchema-2() {
     let $node :=
-<map xmlns="http://www.w3.org/2005/xpath-functions"
- xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<map xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <array key="v-DhbQUwZO3zpW" escaped-key="false">
         <map>
             <array key="fRcP.5e9btnuR3dOnd" escaped-key="false">
@@ -349,10 +403,23 @@ declare
     %test:assertError('FOJS0006')
 function xtj:xml-to-json-unsupportedElement() {
     let $node :=
-<map xmlns="http://www.w3.org/2005/xpath-functions"
- xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+<map xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
     <my-element key=""></my-element>
 </map>
+    return fn:xml-to-json($node)
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-wrong-namespace() {
+    let $node := element { QName("", "map") } {}
+    return fn:xml-to-json($node)
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-wrong-namespace-non-empty() {
+    let $node := element { QName("http://example.com", "map") } {}
     return fn:xml-to-json($node)
 };
 
@@ -409,6 +476,143 @@ function xtj:xmlmap-to-json-for-exponent($int as xs:string) as xs:string {
         <map xmlns="http://www.w3.org/2005/xpath-functions">
           <number key="integer">{$int}</number>
         </map>
+    )
+};
+
+(: ===========================================================
+   F&O 3.1 §17.4.2 / §17.5.4 — structural validation tests
+   (parity with XQTS HEAD xml-to-json-{033,040,042,043,062,063,069,081,082})
+   =========================================================== :)
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-text-child-of-map() {
+    fn:xml-to-json(
+        <map xmlns="http://www.w3.org/2005/xpath-functions">
+            <string key="t">tab</string>blubber<string key="u">undo</string>
+        </map>
+    )
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-text-child-of-array() {
+    fn:xml-to-json(
+        <array xmlns="http://www.w3.org/2005/xpath-functions">
+            <string>tab</string>blubber<string>undo</string>
+        </array>
+    )
+};
+
+declare
+    %test:assertEquals('{"a":null,"b":null}')
+function xtj:xml-to-json-whitespace-between-map-children-allowed() {
+    fn:xml-to-json(
+        <map xmlns="http://www.w3.org/2005/xpath-functions">
+            <null key="a"/>
+            <null key="b"/>
+        </map>
+    )
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-disallowed-no-ns-attribute() {
+    fn:xml-to-json(
+        <map xmlns="http://www.w3.org/2005/xpath-functions">
+            <null key="a" yek="z"/>
+            <null key="b"/>
+        </map>
+    )
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-attribute-in-json-namespace() {
+    fn:xml-to-json(
+        <j:map xmlns:j="http://www.w3.org/2005/xpath-functions" j:base="http://www.w3.org">
+            <j:string key="t">tab</j:string>
+        </j:map>
+    )
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-invalid-escaped-key-value() {
+    fn:xml-to-json(
+        <map xmlns="http://www.w3.org/2005/xpath-functions">
+            <string escaped-key="bonkers" key="t">tab</string>
+        </map>
+    )
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-invalid-escaped-value() {
+    fn:xml-to-json(
+        <map xmlns="http://www.w3.org/2005/xpath-functions">
+            <string escaped="potty" key="t">tab</string>
+        </map>
+    )
+};
+
+declare
+    %test:assertEquals('{"\\t":"tab"}')
+function xtj:xml-to-json-escaped-on-map-tolerated() {
+    fn:xml-to-json(
+        <map xmlns="http://www.w3.org/2005/xpath-functions" escaped="0">
+            <string key="\t">tab</string>
+        </map>
+    )
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-element-child-of-string() {
+    fn:xml-to-json(
+        <string xmlns="http://www.w3.org/2005/xpath-functions">ok<null/></string>
+    )
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-element-child-of-boolean() {
+    fn:xml-to-json(
+        <boolean xmlns="http://www.w3.org/2005/xpath-functions">true<string>qq</string></boolean>
+    )
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-element-child-of-null() {
+    fn:xml-to-json(
+        <null xmlns="http://www.w3.org/2005/xpath-functions"><null/></null>
+    )
+};
+
+declare
+    %test:assertError('FOJS0006')
+function xtj:xml-to-json-element-child-of-number() {
+    fn:xml-to-json(
+        <number xmlns="http://www.w3.org/2005/xpath-functions">1<null/></number>
+    )
+};
+
+declare
+    %test:assertEquals('"ok"')
+function xtj:xml-to-json-foreign-ns-attribute-ignored() {
+    fn:xml-to-json(
+        <string xmlns="http://www.w3.org/2005/xpath-functions"
+                xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+                xsi:type="xs:string">ok</string>
+    )
+};
+
+declare
+    %test:assertEquals('"ok"')
+function xtj:xml-to-json-escaped-numeric-boolean() {
+    fn:xml-to-json(
+        <string xmlns="http://www.w3.org/2005/xpath-functions" escaped="0">ok</string>
     )
 };
 

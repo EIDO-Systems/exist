@@ -6,13 +6,15 @@
            xmlns:dcterms="http://purl.org/dc/terms/"
            elementFormDefault="qualified"
            targetNamespace="http://exist-db.org/collection-config/1.0"
-           version="1.0.0">
+           version="1.2.2">
+
+    <xs:include schemaLocation="schema-version-type.xsd"/>
 
     <xs:annotation>
         <xs:documentation>Schema for eXist-db Collection Configuration files /db/system/config/db/**/collection.xconf</xs:documentation>
         <xs:appinfo>
             <dcterms:title>Schema for eXist-db Collection Configuration Files</dcterms:title>
-            <dcterms:created xsi:type="dcterms:W3CDTF">2011-10-09T18:47:21.319+01:00</dcterms:created>
+            <dcterms:created>2011-10-09T18:47:21.319+01:00</dcterms:created>
             <dcterms:creator>Adam Retter</dcterms:creator>
         </xs:appinfo>
     </xs:annotation>
@@ -28,6 +30,7 @@
             <xs:element ref="cc:triggers" minOccurs="0"/>
             <xs:element ref="cc:validation" minOccurs="0"/>
         </xs:all>
+        <xs:attribute name="schemaVersion" type="cc:schemaVersionType" use="optional"/>
         <xs:assert test="count(*) ge 1"/>
     </xs:complexType>
     <xs:element name="index" type="cc:indexType"/>
@@ -97,7 +100,7 @@
         <xs:attributeGroup ref="cc:caseOpt"/>
         <xs:attributeGroup ref="cc:nestedOpt"/>
         <xs:attributeGroup ref="cc:whitespaceOpt"/>
-        <xs:attributeGroup ref="cc:typeReq"/>
+        <xs:attributeGroup ref="cc:typeOpt"/>
     </xs:complexType>
     
     <xs:element name="lucene" type="cc:luceneType"/>
@@ -110,6 +113,17 @@
             <xs:group ref="cc:textInstruction"/>
         </xs:all>
         <xs:attributeGroup ref="cc:diacriticsOpt"/>
+        <xs:attribute name="vector-store" use="optional" default="db">
+            <xs:annotation>
+                <xs:documentation>Where to store vectors for embedding=local: 'db' = Lucene + vector.dbx (default, reindex reads from db); 'lucene' = Lucene only (US-I6, reindex recomputes from source text).</xs:documentation>
+            </xs:annotation>
+            <xs:simpleType>
+                <xs:restriction base="xs:token">
+                    <xs:enumeration value="lucene"/>
+                    <xs:enumeration value="db"/>
+                </xs:restriction>
+            </xs:simpleType>
+        </xs:attribute>
     </xs:complexType>
 
     <xs:element name="analyzer" type="cc:analyzerType"/>
@@ -151,8 +165,48 @@
             <xs:element name="match-sibling-attribute" minOccurs="0" maxOccurs="unbounded" type="cc:matchAttrBoostType"/>
             <xs:element name="has-attribute" minOccurs="0" maxOccurs="unbounded" type="cc:hasAttrBoostType"/>
             <xs:element name="has-sibling-attribute" minOccurs="0" maxOccurs="unbounded" type="cc:hasAttrBoostType"/>
+            <xs:element name="vector-field" minOccurs="0" maxOccurs="unbounded" type="cc:vectorFieldAttrType"/>
         </xs:all>
     </xs:group>
+
+    <xs:complexType name="vectorFieldAttrType">
+        <xs:annotation>
+            <xs:documentation>Vector field for KNN/semantic search. Dense float vectors; dimension fixed per field.</xs:documentation>
+        </xs:annotation>
+        <xs:attributeGroup ref="cc:nameReq"/>
+        <xs:attributeGroup ref="cc:expressionReq"/>
+        <xs:attribute name="dimension" type="xs:positiveInteger" use="required"/>
+        <xs:attribute name="similarity" use="optional" default="cosine">
+            <xs:simpleType>
+                <xs:restriction base="xs:token">
+                    <xs:enumeration value="cosine"/>
+                    <xs:enumeration value="euclidean"/>
+                    <xs:enumeration value="dot_product"/>
+                </xs:restriction>
+            </xs:simpleType>
+        </xs:attribute>
+        <xs:attribute name="encoding" use="optional" default="base64">
+            <xs:simpleType>
+                <xs:restriction base="xs:token">
+                    <xs:enumeration value="base64"/>
+                    <xs:enumeration value="text"/>
+                </xs:restriction>
+            </xs:simpleType>
+        </xs:attribute>
+        <xs:attribute name="embedding" use="optional">
+            <xs:annotation>
+                <xs:documentation>local = ONNX or HTTP (model-path determines); http = external API (model-path required, e.g. https://api.openai.com/v1). Set OPENAI_API_KEY or COHERE_API_KEY env var.</xs:documentation>
+            </xs:annotation>
+            <xs:simpleType>
+                <xs:restriction base="xs:token">
+                    <xs:enumeration value="local"/>
+                    <xs:enumeration value="http"/>
+                </xs:restriction>
+            </xs:simpleType>
+        </xs:attribute>
+        <xs:attribute name="model" use="optional" type="xs:token"/>
+        <xs:attribute name="model-path" use="optional" type="xs:token"/>
+    </xs:complexType>
 
     <xs:element name="text" type="cc:textType"/>
 
@@ -216,7 +270,7 @@
             <xs:documentation>Trigger Configuration</xs:documentation>
         </xs:annotation>
         <xs:sequence>
-            <xs:element ref="cc:trigger" maxOccurs="unbounded"/>
+            <xs:element ref="cc:trigger" minOccurs="0" maxOccurs="unbounded"/>
         </xs:sequence>
     </xs:complexType>
 
@@ -287,7 +341,7 @@
         <xs:attribute name="at" type="xs:anyURI" use="required" form="unqualified"/>
     </xs:attributeGroup>
     <xs:attributeGroup name="attributeReq">
-        <xs:attribute name="attribute" type="xs:NCName" use="required"/>
+        <xs:attribute name="attribute" type="xs:string" use="required"/>
     </xs:attributeGroup>
     <xs:attributeGroup name="binaryOpt">
         <xs:attribute name="binary" use="optional">

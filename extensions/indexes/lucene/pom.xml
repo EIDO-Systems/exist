@@ -28,7 +28,7 @@
     <parent>
         <groupId>org.exist-db</groupId>
         <artifactId>exist-parent</artifactId>
-        <version>7.0.0-SNAPSHOT</version>
+        <version>${revision}</version>
         <relativePath>../../../exist-parent</relativePath>
     </parent>
     
@@ -56,12 +56,12 @@
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-collections4</artifactId>
         </dependency>
-        
+
         <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-lang3</artifactId>
+            <groupId>com.github.ben-manes.caffeine</groupId>
+            <artifactId>caffeine</artifactId>
         </dependency>
-        
+
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
@@ -72,17 +72,22 @@
             <artifactId>lucene-core</artifactId>
             <version>${lucene.version}</version>
         </dependency>
-        
+
         <dependency>
             <groupId>org.apache.lucene</groupId>
-            <artifactId>lucene-analyzers-common</artifactId>
+            <artifactId>lucene-analysis-common</artifactId>
             <version>${lucene.version}</version>
         </dependency>
 
         <dependency>
             <groupId>org.apache.lucene</groupId>
-            <artifactId>lucene-analyzers-icu</artifactId>
+            <artifactId>lucene-analysis-icu</artifactId>
             <version>${lucene.version}</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.ibm.icu</groupId>
+            <artifactId>icu4j</artifactId>
         </dependency>
 
         <dependency>
@@ -95,9 +100,8 @@
             <groupId>org.apache.lucene</groupId>
             <artifactId>lucene-queries</artifactId>
             <version>${lucene.version}</version>
-            <scope>runtime</scope>
         </dependency>
-        
+
         <dependency>
             <groupId>org.apache.lucene</groupId>
             <artifactId>lucene-queryparser</artifactId>
@@ -130,8 +134,10 @@
         </dependency>
 
         <dependency>
-            <groupId>xml-apis</groupId>
-            <artifactId>xml-apis</artifactId>
+            <groupId>org.exist-db</groupId>
+            <artifactId>exist-vector</artifactId>
+            <version>${project.version}</version>
+            <optional>true</optional>
         </dependency>
 
         <dependency>
@@ -171,10 +177,35 @@
             <testResource>
                 <directory>src/test/resources-filtered</directory>
                 <filtering>true</filtering>
+                <excludes>
+                    <exclude>*.xsl</exclude>
+                </excludes>
+            </testResource>
+            <testResource>
+                <directory>${project.build.directory}/generated-test-resources</directory>
+                <filtering>true</filtering>
             </testResource>
         </testResources>
 
         <plugins>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-surefire-plugin</artifactId>
+                <configuration>
+                    <skip>${skipUnitTests}</skip>
+                    <!-- Avoid duplicate XQSuite execution in default runs:
+                         LuceneTests already executes src/test/xquery/lucene/** -->
+                    <excludes>
+                        <exclude>**/xquery/lucene/LuceneIndexingTests.java</exclude>
+                        <exclude>**/xquery/lucene/LuceneAnalyzersTests.java</exclude>
+                        <exclude>**/xquery/lucene/FtMatchTests.java</exclude>
+                        <exclude>**/xquery/lucene/FtAttrContextTests.java</exclude>
+                        <exclude>**/xquery/lucene/VectorSearchTests.java</exclude>
+                        <exclude>**/xquery/lucene/ReindexSecondStoreTest.java</exclude>
+                    </excludes>
+                </configuration>
+            </plugin>
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
@@ -186,15 +217,6 @@
                         </goals>
                         <configuration>
                             <failOnWarning>true</failOnWarning>
-                            <ignoredUnusedDeclaredDependencies>
-                                <ignoredUnusedDeclaredDependency>org.apache.lucene:lucene-queries:jar:${lucene.version}</ignoredUnusedDeclaredDependency>  <!-- needed at runtime to support lucene query syntax -->
-                                <ignoredUnusedDeclaredDependency>org.junit.vintage:junit-vintage-engine:jar</ignoredUnusedDeclaredDependency>
-                            </ignoredUnusedDeclaredDependencies>
-
-                            <ignoredUsedUndeclaredDependencies>
-                                <ignoredUsedUndeclaredDependency>com.ibm.icu:icu4j:jar</ignoredUsedUndeclaredDependency>
-                            </ignoredUsedUndeclaredDependencies>
-
                             <ignoredNonTestScopedDependencies>
                                 <ignoredNonTestScopedDependency>net.sf.xmldb-org:xmldb-api:jar</ignoredNonTestScopedDependency>
                             </ignoredNonTestScopedDependencies>
@@ -204,5 +226,40 @@
             </plugin>
         </plugins>
     </build>
-    
+
+    <profiles>
+        <!-- Model download is inherited from exist-parent. This profile adds exist.home for surefire tests that need it. -->
+        <profile>
+            <id>onnx-model</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <systemPropertyVariables>
+                                <exist.home>${project.basedir}</exist.home>
+                            </systemPropertyVariables>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+        <profile>
+            <id>targeted-xquery-runners</id>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>org.apache.maven.plugins</groupId>
+                        <artifactId>maven-surefire-plugin</artifactId>
+                        <configuration>
+                            <!-- Re-enable targeted wrapper classes when explicitly requested. -->
+                            <excludes combine.self="override"/>
+                        </configuration>
+                    </plugin>
+                </plugins>
+            </build>
+        </profile>
+    </profiles>
+
 </project>

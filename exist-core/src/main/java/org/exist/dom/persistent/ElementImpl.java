@@ -54,6 +54,7 @@ import org.w3c.dom.*;
 import javax.xml.XMLConstants;
 import javax.xml.stream.XMLStreamConstants;
 import javax.xml.stream.XMLStreamException;
+import javax.annotation.Nonnull;
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.io.IOException;
@@ -506,8 +507,8 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
                     "A Document Type Node may not be appended to an element");
         }
 
-        if(newChild instanceof IStoredNode) {
-            final NodeId newChildId = ((IStoredNode)newChild).getNodeId();
+        if(newChild instanceof IStoredNode node) {
+            final NodeId newChildId = node.getNodeId();
             if(newChildId != null && getNodeId().isDescendantOf(newChildId)) {
                 throw new DOMException(DOMException.HIERARCHY_REQUEST_ERR,
                         "The node to append is one of this node's ancestors");
@@ -795,22 +796,17 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
     }
 
     @Override
+    @Nonnull
     public String getAttribute(final String name) {
         final Attr attr = findAttribute(name);
         return attr != null ? attr.getValue() : "";
     }
 
     @Override
+    @Nonnull
     public String getAttributeNS(final String namespaceURI, final String localName) {
         final Attr attr = findAttribute(new QName(localName, namespaceURI));
-        return attr != null ? attr.getValue() : XMLConstants.NULL_NS_URI;
-        //XXX: if not present must return null
-    }
-
-    @Deprecated //move as soon as getAttributeNS null issue resolved 
-    public String _getAttributeNS(final String namespaceURI, final String localName) {
-        final Attr attr = findAttribute(new QName(localName, namespaceURI));
-        return attr != null ? attr.getValue() : null;
+        return attr != null ? attr.getValue() : "";
     }
 
     @Override
@@ -826,6 +822,7 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
     @Override
     public NamedNodeMap getAttributes() {
         final org.exist.dom.NamedNodeMapImpl map = new NamedNodeMapImpl(ownerDocument, true);
+
         if(hasAttributes()) {
             try(final DBBroker broker = ownerDocument.getBrokerPool().getBroker();
                 final INodeIterator iterator = broker.getNodeIterator(this)) {
@@ -841,6 +838,14 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
                     if(next.getNodeType() != Node.ATTRIBUTE_NODE) {
                         break;
                     }
+                    // Skip namespace declarations for the XML namespace — the xml prefix
+                    // is always implicitly bound and Saxon 12 rejects any explicit
+                    // declaration involving http://www.w3.org/XML/1998/namespace
+                    if (next.getNodeType() == Node.ATTRIBUTE_NODE
+                            && Namespaces.XMLNS_NS.equals(next.getNamespaceURI())
+                            && XMLConstants.XML_NS_URI.equals(next.getNodeValue())) {
+                        continue;
+                    }
                     map.setNamedItem(next);
                 }
             } catch(final EXistException | IOException e) {
@@ -851,6 +856,13 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
             for (final Map.Entry<String, String> entry : namespaceMappings.entrySet()) {
                 final String prefix = entry.getKey();
                 final String ns = entry.getValue();
+                // Skip namespace declarations involving the XML namespace URI —
+                // Saxon 12 rejects any explicit declaration of the xml prefix
+                // or binding of the XML namespace to a non-xml prefix
+                if (XMLConstants.XML_NS_PREFIX.equals(prefix)
+                        || XMLConstants.XML_NS_URI.equals(ns)) {
+                    continue;
+                }
                 final QName attrName = new QName(prefix, Namespaces.XMLNS_NS, XMLConstants.XMLNS_ATTRIBUTE);
                 final AttrImpl attr = new AttrImpl(getExpression(), attrName, ns, null);
                 attr.setOwnerDocument(ownerDocument);
@@ -951,6 +963,7 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
     }
 
     @Override
+    @Nonnull
     public NodeList getChildNodes() {
         final int childNodesLen = children - attributes;
         final org.exist.dom.NodeListImpl childList = new org.exist.dom.NodeListImpl(childNodesLen);
@@ -1008,6 +1021,7 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
     }
 
     @Override
+    @Nonnull
     public NodeList getElementsByTagName(final String name) {
         if(name != null && name.equals(QName.WILDCARD)) {
             return getElementsByTagName(new QName.WildcardLocalPartQName(XMLConstants.DEFAULT_NS_PREFIX));
@@ -1021,6 +1035,7 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
     }
 
     @Override
+    @Nonnull
     public NodeList getElementsByTagNameNS(final String namespaceURI, final String localName) {
         final boolean wildcardNS = namespaceURI != null && namespaceURI.equals(QName.WILDCARD);
         final boolean wildcardLocalPart = localName != null && localName.equals(QName.WILDCARD);
@@ -1977,9 +1992,9 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
     private XmldbURI calculateBaseURI() {
         XmldbURI baseURI = null;
 
-        final String nodeBaseURI = _getAttributeNS(Namespaces.XML_NS, "base");
+        final Node nodeBaseURI = getAttributeNodeNS(Namespaces.XML_NS, "base");
         if(nodeBaseURI != null) {
-            baseURI = XmldbURI.create(nodeBaseURI, false);
+            baseURI = XmldbURI.create(nodeBaseURI.getNodeValue(), false);
             if(baseURI.isAbsolute()) {
                 return baseURI;
             }
@@ -1991,7 +2006,7 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
                 baseURI = ((ElementImpl) parent).calculateBaseURI();
             } else {
                 XmldbURI parentsBaseURI = ((ElementImpl) parent).calculateBaseURI();
-                if(nodeBaseURI.isEmpty()) {
+                if(nodeBaseURI.getNodeValue().isEmpty()) {
                     baseURI = parentsBaseURI;
                 } else {
                     if(parentsBaseURI.toString().endsWith("/") || !parentsBaseURI.toString().contains("/")){
@@ -2042,8 +2057,8 @@ public class ElementImpl extends NamedNode<ElementImpl> implements Element {
     public String lookupNamespaceURI(final String prefix) {
 
         for (Node pathNode = this; pathNode != null; pathNode = pathNode.getParentNode()) {
-            if (pathNode instanceof ElementImpl) {
-                final String namespaceForPrefix = ((ElementImpl)pathNode).getNamespaceForPrefix(prefix);
+            if (pathNode instanceof ElementImpl impl) {
+                final String namespaceForPrefix = impl.getNamespaceForPrefix(prefix);
                 if (namespaceForPrefix != null) {
                     return namespaceForPrefix;
                 }

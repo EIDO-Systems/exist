@@ -52,6 +52,11 @@ public class FnHasChildren extends Function {
     }
 
     @Override
+    public boolean isContextDependent() {
+        return getArgumentCount() == 0;
+    }
+
+    @Override
     public Sequence eval(Sequence contextSequence, final Item contextItem) throws XPathException {
         final NodeValue node;
 
@@ -89,8 +94,8 @@ public class FnHasChildren extends Function {
         final Node w3cNode;
         if(node instanceof NodeProxy) {
             w3cNode = node.getNode();
-        } else if(node instanceof org.exist.dom.memtree.NodeImpl) {
-            w3cNode = ((org.exist.dom.memtree.NodeImpl)node);
+        } else if(node instanceof org.exist.dom.memtree.NodeImpl impl) {
+            w3cNode = impl;
         } else {
             throw new XPathException(this, ErrorCodes.XPTY0004, "Context item is not a node()");
         }

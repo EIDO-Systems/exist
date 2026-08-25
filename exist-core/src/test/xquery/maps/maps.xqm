@@ -177,11 +177,13 @@ function mt:size() {
 };
 
 declare
-    %test:assertEquals("Sunday", "Tuesday", "Thursday", "Saturday")
+    %test:assertEquals("Saturday", "Sunday", "Thursday", "Tuesday")
 function mt:for-each() {
-    map:for-each($mt:integerKeys, function($key, $value) {
+    (: map:for-each iteration order is implementation-defined; sort the
+       result so this test guards the selection, not Bifurcan bucket layout :)
+    sort(map:for-each($mt:integerKeys, function($key, $value) {
         if ($key mod 2) then ($value) else ()
-    })
+    }))
 };
 
 declare
@@ -324,6 +326,13 @@ function mt:merge-duplicate-keys-combine-has-duplicates-empty-third() {
     let $specialWeek := map:merge((map { 7 : ("Caturday") }, $mt:integerKeys, map { 7: ()}), map { "duplicates": "combine" })
     return
         ($specialWeek(7))
+};
+
+(: see https://github.com/eXist-db/exist/issues/6125 :)
+declare
+    %test:assertEquals(1)
+function mt:merge-duplicate-keys-empty-sequence() {
+    map:merge((map{1: 1},map{1: 3}), map{"duplicates": ()})?1
 };
 
 declare
@@ -987,6 +996,38 @@ function mt:map-merge-2-empty-options-map() {
     return $expected?Su eq $actual?Su
 };
 
+(: test for issue https://github.com/eXist-db/exist/issues/6327 -
+   xs:duration vs xs:yearMonthDuration must compare equal under op:same-key
+   regardless of which subtype is used as the search key. :)
+declare
+    %test:assertTrue
+function mt:duration-vs-yearMonthDuration-contains() {
+    map:contains(map{xs:duration('P1Y'):"x"}, xs:yearMonthDuration('P12M'))
+};
+
+declare
+    %test:assertTrue
+function mt:yearMonthDuration-vs-duration-contains() {
+    map:contains(map{xs:yearMonthDuration('P12M'):"x"}, xs:duration('P1Y'))
+};
+
+declare
+    %test:assertTrue
+function mt:duration-vs-dayTimeDuration-contains() {
+    map:contains(map{xs:duration('P1D'):"x"}, xs:dayTimeDuration('PT24H'))
+};
+
+declare
+    %test:assertEquals("Wednesday")
+function mt:duration-key-lookup-mirrors-XQTS-map-contains-017() {
+    let $m := map{
+        1:"Sunday",2:"Monday",3:"Tuesday",
+        xs:duration('P1Y'):"Wednesday",
+        5:"Thursday",6:"Friday",7:"Saturday"
+    }
+    return $m(xs:yearMonthDuration('P12M'))
+};
+
 (: test for issue https://github.com/eXist-db/exist/issues/5685 :)
 declare
     %test:assertEquals("<ul><li>Scotland<ul><li>Highlands<ul><li>Fort William</li><li>Inverness</li></ul></li><li>Lowlands<ul><li>Glasgow</li></ul></li></ul></li></ul>")
@@ -1011,4 +1052,70 @@ function mt:nested-map-for-each() {
         })
     }</ul>
     => serialize(map{'indent':false()})
+};
+
+(:
+ : Regression guards for the equals/hashCode contract on AtomicValue subclasses
+ : that participate in op:same-key.
+ :
+ : Pre-fix symptom: when two spec-equal but different-XDM-type keys hashed to
+ : different Bifurcan buckets, map:contains and map:get returned false/() even
+ : though sameKey reported equality. Matches the PR #6333 / map-contains-017
+ : diagnostic signature for the numeric and xs:boolean clusters.
+ :)
+declare
+    %test:assertTrue
+function mt:map-contains-integer-decimal-cross-type() {
+    map:contains(map { 1: "one" }, xs:decimal(1.0))
+};
+
+declare
+    %test:assertTrue
+function mt:map-contains-integer-double-cross-type() {
+    map:contains(map { 1: "one" }, xs:double(1.0))
+};
+
+declare
+    %test:assertTrue
+function mt:map-contains-integer-float-cross-type() {
+    map:contains(map { 1: "one" }, xs:float(1.0))
+};
+
+declare
+    %test:assertTrue
+function mt:map-contains-decimal-double-cross-type() {
+    map:contains(map { xs:decimal(1.5): "x" }, xs:double(1.5))
+};
+
+declare
+    %test:assertTrue
+function mt:map-contains-decimal-trailing-zeros() {
+    map:contains(map { xs:decimal("1.0"): "x" }, xs:decimal("1.00"))
+};
+
+declare
+    %test:assertEquals("one")
+function mt:map-get-integer-via-double-key() {
+    map:get(map { 1: "one" }, xs:double(1.0))
+};
+
+declare
+    %test:assertTrue
+function mt:map-contains-nan-key() {
+    map:contains(map { xs:double('NaN'): "x" }, xs:double('NaN'))
+};
+
+declare
+    %test:assertTrue
+function mt:map-contains-positive-infinity-cross-type() {
+    map:contains(map { xs:double('INF'): "x" }, xs:float('INF'))
+};
+
+declare
+    %test:assertTrue
+function mt:map-contains-boolean-non-singleton() {
+    (: BooleanValue inherits identity hashCode without the fix; new instances would mis-bucket :)
+    let $key1 := xs:boolean("true")
+    let $key2 := xs:boolean("true")
+    return map:contains(map { $key1: "yes" }, $key2)
 };

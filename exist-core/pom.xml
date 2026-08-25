@@ -28,7 +28,7 @@
     <parent>
         <groupId>org.exist-db</groupId>
         <artifactId>exist-parent</artifactId>
-        <version>7.0.0-SNAPSHOT</version>
+        <version>${revision}</version>
         <relativePath>../exist-parent</relativePath>
     </parent>
 
@@ -59,7 +59,7 @@
         <dependency>
             <groupId>com.fasterxml.jackson.core</groupId>
             <artifactId>jackson-core</artifactId>
-            <version>2.19.0</version>
+            <version>2.22.2</version>
         </dependency>
 
         <!-- dependency>
@@ -169,13 +169,12 @@
         <dependency>
             <groupId>org.bouncycastle</groupId>
             <artifactId>bcprov-jdk18on</artifactId>
-            <version>1.80</version>
         </dependency>
 
         <dependency>
-            <groupId>org.lz4</groupId>
+            <groupId>at.yawk.lz4</groupId>
             <artifactId>lz4-java</artifactId>
-            <version>1.8.0</version>
+            <version>1.11.2</version>
         </dependency>
 
         <dependency>
@@ -186,7 +185,7 @@
         <dependency>
             <groupId>com.fasterxml.uuid</groupId>
             <artifactId>java-uuid-generator</artifactId>
-            <version>5.1.0</version>
+            <version>5.2.0</version>
         </dependency>
 
         <dependency>
@@ -221,11 +220,12 @@
         <dependency>
             <groupId>org.jline</groupId>
             <artifactId>jline</artifactId>
-            <version>3.30.4</version>
+            <version>4.3.1</version>
+            <classifier>${jline.classifier}</classifier>
         </dependency>
 
         <dependency>
-            <groupId>org.fusesource.jansi</groupId>
+            <groupId>org.jline</groupId>
             <artifactId>jansi</artifactId>
             <version>${jansi.version}</version>
             <!--
@@ -263,13 +263,13 @@
         <dependency>
             <groupId>commons-logging</groupId>
             <artifactId>commons-logging</artifactId>
-            <version>1.3.5</version>
+            <version>1.4.0</version>
         </dependency>
 
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-pool2</artifactId>
-            <version>2.12.1</version>
+            <version>2.13.1</version>
         </dependency>
 
         <dependency>
@@ -300,7 +300,6 @@
         <dependency>
             <groupId>org.exist-db.thirdparty.xerces</groupId>
             <artifactId>xercesImpl</artifactId>
-            <version>2.12.2</version>
             <classifier>jdk14-xml-schema-1.1</classifier>
             <exclusions>
                 <exclusion> <!-- conflicts with Java 17's javax.xml module -->
@@ -347,7 +346,6 @@
         <dependency>
             <groupId>org.xmlresolver</groupId>
             <artifactId>xmlresolver</artifactId>
-            <version>${xmlresolver.version}</version>
             <exclusions>
                 <exclusion> <!-- conflicts with Java 17's javax.xml module -->
                     <groupId>xml-apis</groupId>
@@ -359,7 +357,6 @@
         <dependency>
             <groupId>org.xmlresolver</groupId>
             <artifactId>xmlresolver</artifactId>
-            <version>${xmlresolver.version}</version>
             <classifier>data</classifier>
             <scope>runtime</scope>
             <exclusions>
@@ -375,32 +372,17 @@
         <dependency>
             <groupId>org.exist-db.thirdparty.org.eclipse.wst.xml</groupId>
             <artifactId>xpath2</artifactId>
-            <version>1.2.0</version>
             <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>edu.princeton.cup</groupId>
             <artifactId>java-cup</artifactId>
-            <version>10k</version>
             <scope>runtime</scope>
         </dependency>
 
         <dependency>
             <groupId>net.sf.saxon</groupId>
             <artifactId>Saxon-HE</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>org.exist-db</groupId>
-            <artifactId>exist-saxon-regex</artifactId>
-            <version>9.4.0-9.e1</version>
-            <exclusions>
-                <exclusion>
-                    <!-- we have our own dependency on Saxon -->
-                    <groupId>net.sf.saxon</groupId>
-                    <artifactId>Saxon-HE</artifactId>
-                </exclusion>
-            </exclusions>
         </dependency>
 
         <dependency>
@@ -430,34 +412,36 @@
             <version>${aspectj.version}</version>
         </dependency>
 
-        <dependency>
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-jaas</artifactId>
-            <version>${jetty.version}</version>
-            <scope>runtime</scope>
-            <exclusions>
-                <exclusion>
-                    <!-- conflicts with antlr 2.7.7 -->
-                    <groupId>org.apache.servicemix.bundles</groupId>
-                    <artifactId>org.apache.servicemix.bundles.antlr</artifactId>
-                </exclusion>
-            </exclusions>
-        </dependency>
+        <!-- JAAS is now in jetty-security (core module) in Jetty 12 -->
+
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-http</artifactId>
-            <version>${jetty.version}</version>
             <!-- NOTE: needed for both scopes: <scope>runtime</scope><scope>test</scope> -->
         </dependency>
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-security</artifactId>
-            <version>${jetty.version}</version>
             <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-server</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.jetty.http2</groupId>
+            <artifactId>jetty-http2-server</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.jetty</groupId>
+            <artifactId>jetty-alpn-server</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.eclipse.jetty</groupId>
+            <artifactId>jetty-alpn-java-server</artifactId>
+            <scope>runtime</scope>
         </dependency>
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
@@ -472,13 +456,13 @@
         <dependency>
             <groupId>com.fifesoft</groupId>
             <artifactId>rsyntaxtextarea</artifactId>
-            <version>3.6.0</version>
+            <version>4.0.1</version>
         </dependency>
 
         <dependency>
             <groupId>org.quartz-scheduler</groupId>
             <artifactId>quartz</artifactId>
-            <version>2.5.0</version>  <!-- Quartz 2.3.1 has an issue on Windows, see: https://github.com/quartz-scheduler/quartz/issues/448 -->
+            <version>2.5.2</version>  <!-- Quartz 2.3.1 has an issue on Windows, see: https://github.com/quartz-scheduler/quartz/issues/448 -->
             <!-- exclude Quartz SQL connectivity options -->
             <exclusions>
                 <exclusion>
@@ -523,13 +507,13 @@
         <dependency>
             <groupId>org.jgrapht</groupId>
             <artifactId>jgrapht-core</artifactId>
-            <version>1.5.2</version>
+            <version>1.5.3</version>
         </dependency>
 
 	<dependency>
             <groupId>org.jgrapht</groupId>
             <artifactId>jgrapht-opt</artifactId>
-            <version>1.5.2</version>
+            <version>1.5.3</version>
         </dependency>
 
         <dependency>
@@ -544,6 +528,11 @@
         </dependency>
 
         <!-- test dependencies -->
+        <dependency>
+            <groupId>com.github.mizosoft.methanol</groupId>
+            <artifactId>methanol</artifactId>
+            <scope>test</scope>
+        </dependency>
         <dependency>
             <groupId>org.exist-db</groupId>
             <artifactId>exist-jetty-config</artifactId>
@@ -600,11 +589,6 @@
             <artifactId>junit-toolbox</artifactId>
             <scope>test</scope>
         </dependency>
-        <dependency>
-            <groupId>org.apache.httpcomponents</groupId>
-            <artifactId>httpclient</artifactId>
-            <scope>test</scope>
-        </dependency>
 
         <!-- needed for starting up a jetty server -->
         <dependency>
@@ -628,34 +612,42 @@
                           removed. Unfortunately, at this time, it is required for
                           Monex's Remote Console to function.
             -->
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-annotations</artifactId>
+            <groupId>org.eclipse.jetty.ee10</groupId>
+            <artifactId>jetty-ee10-annotations</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-servlet</artifactId>
+            <groupId>org.eclipse.jetty.ee10</groupId>
+            <artifactId>jetty-ee10-servlet</artifactId>
         </dependency>
         <dependency>
-            <groupId>org.eclipse.jetty</groupId>
-            <artifactId>jetty-webapp</artifactId>
+            <groupId>org.eclipse.jetty.ee10</groupId>
+            <artifactId>jetty-ee10-webapp</artifactId>
         </dependency>
         <dependency>
             <groupId>org.eclipse.jetty</groupId>
             <artifactId>jetty-xml</artifactId>
         </dependency>
+        <!-- Jakarta WebSocket API for @ServerEndpoint -->
         <dependency>
-            <groupId>org.apache.httpcomponents</groupId>
-            <artifactId>httpcore</artifactId>
-            <scope>test</scope>
+            <groupId>jakarta.websocket</groupId>
+            <artifactId>jakarta.websocket-client-api</artifactId>
+            <scope>provided</scope>
         </dependency>
         <dependency>
-            <groupId>org.apache.httpcomponents</groupId>
-            <artifactId>httpmime</artifactId>
-            <scope>test</scope>
+            <groupId>jakarta.websocket</groupId>
+            <artifactId>jakarta.websocket-api</artifactId>
+            <scope>provided</scope>
         </dependency>
+        <!-- Jetty 12 EE10 WebSocket server for programmatic endpoint registration -->
         <dependency>
-            <groupId>org.apache.httpcomponents</groupId>
-            <artifactId>fluent-hc</artifactId>
+            <groupId>org.eclipse.jetty.ee10.websocket</groupId>
+            <artifactId>jetty-ee10-websocket-jakarta-server</artifactId>
+        </dependency>
+        <!-- Jakarta WebSocket client for tests -->
+        <dependency>
+            <groupId>org.eclipse.jetty.ee10.websocket</groupId>
+            <artifactId>jetty-ee10-websocket-jakarta-client</artifactId>
+            <version>${jetty.version}</version>
             <scope>test</scope>
         </dependency>
 
@@ -678,9 +670,21 @@
             <testResource>
                 <directory>src/test/resources</directory>
                 <filtering>false</filtering>
+                <excludes>
+                    <!-- Only the codegen stylesheets, not unrelated .xsl test fixtures
+                         like tei-toc.xsl/transform-catalog-test-lib.xsl elsewhere in this tree. -->
+                    <exclude>**/*-fixture.xsl</exclude>
+                </excludes>
             </testResource>
             <testResource>
                 <directory>src/test/resources-filtered</directory>
+                <filtering>true</filtering>
+                <excludes>
+                    <exclude>**/*.xsl</exclude>
+                </excludes>
+            </testResource>
+            <testResource>
+                <directory>${project.build.directory}/generated-test-resources</directory>
                 <filtering>true</filtering>
             </testResource>
         </testResources>
@@ -709,6 +713,8 @@
                                 <exclude>src/test/resources/**/*.bin</exclude>
                                 <exclude>src/test/resources/org/exist/validation/entities/**</exclude>
                                 <exclude>src/test/resources/org/exist/xmldb/allowAnyUri.xml</exclude>
+                                <!-- W3C XInclude test suite — third-party test content, not eXist-db code -->
+                                <exclude>src/test/resources/xinclude-test-suite/**</exclude>
 
                                 <!--
                                     Already under LGPL 2.1, but with a different Copyright
@@ -828,7 +834,7 @@
                                 <exclude>src/main/java/org/exist/util/io/MemoryFilterInputStreamCache.java</exclude>
                                 <exclude>src/main/java/org/exist/util/io/MemoryMappedFileFilterInputStreamCache.java</exclude>
                                 <exclude>src/main/java/org/exist/util/io/TemporaryFileManager.java</exclude>
-                                <exclude>src/test/java/org/exist/util/io/CachingFilterInputStreamTest_NonMarkableByteArrayInputStream.java</exclude>
+                                <exclude>src/test/java/org/exist/util/io/CachingFilterInputStreamNonMarkableByteArrayInputStreamTest.java</exclude>
                                 <exclude>src/main/java/org/exist/xquery/functions/fn/FnFormatNumbers.java</exclude>
                             </excludes>
                         </licenseSet>
@@ -871,7 +877,7 @@ The original license statement is also included below.]]></preamble>
                                 <include>src/main/java/org/exist/util/io/MemoryFilterInputStreamCache.java</include>
                                 <include>src/main/java/org/exist/util/io/MemoryMappedFileFilterInputStreamCache.java</include>
                                 <include>src/main/java/org/exist/util/io/TemporaryFileManager.java</include>
-                                <include>src/test/java/org/exist/util/io/CachingFilterInputStreamTest_NonMarkableByteArrayInputStream.java</include>
+                                <include>src/test/java/org/exist/util/io/CachingFilterInputStreamNonMarkableByteArrayInputStreamTest.java</include>
                             </includes>
                         </licenseSet>
 
@@ -1004,17 +1010,6 @@ The BaseX Team. The original license statement is also included below.]]></pream
                     </licenseSets>
                 </configuration>
             </plugin>
-
-            <plugin>
-                <groupId>org.owasp</groupId>
-                <artifactId>dependency-check-maven</artifactId>
-                <configuration>
-                    <suppressionFiles>
-                        <suppressionFile>${basedir}/project-suppression.xml</suppressionFile>
-                    </suppressionFiles>
-                </configuration>
-            </plugin>
-
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>
@@ -1033,18 +1028,23 @@ The BaseX Team. The original license statement is also included below.]]></pream
                                 <ignoredUnusedDeclaredDependency>org.apache.logging.log4j:log4j-jul:jar:${log4j.version}</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>org.eclipse.angus:angus-activation:jar:${eclipse.angus-activation.version}</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>org.glassfish.jaxb:jaxb-runtime:jar:${jaxb.impl.version}</ignoredUnusedDeclaredDependency>
-                                <ignoredUnusedDeclaredDependency>org.fusesource.jansi:jansi:jar:${jansi.version}</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.jline:jansi:jar:${jansi.version}</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>org.codelibs:nekohtml:jar:${nekohtml.version}</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>xml-resolver:xml-resolver:jar:1.2</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>org.xmlresolver:xmlresolver:jar:${xmlresolver.version}</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>org.exist-db.thirdparty.org.eclipse.wst.xml:xpath2:jar:1.2.0</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>edu.princeton.cup:java-cup:jar:10k</ignoredUnusedDeclaredDependency>
-                                <ignoredUnusedDeclaredDependency>org.eclipse.jetty:jetty-jaas:jar:${jetty.version}</ignoredUnusedDeclaredDependency>
+                                <!-- JAAS is now in jetty-security in Jetty 12 -->
                                 <ignoredUnusedDeclaredDependency>org.eclipse.jetty:jetty-deploy:jar:${jetty.version}</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>org.eclipse.jetty:jetty-jmx:jar:${jetty.version}</ignoredUnusedDeclaredDependency>
-                                <ignoredUnusedDeclaredDependency>org.eclipse.jetty:jetty-annotations:jar:${jetty.version}</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.eclipse.jetty.ee10:jetty-ee10-annotations:jar:${jetty.version}</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>org.eclipse.jetty:jetty-security:jar:${jetty.version}</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.eclipse.jetty.http2:jetty-http2-server:jar:${jetty.version}</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.eclipse.jetty:jetty-alpn-server:jar:${jetty.version}</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.eclipse.jetty:jetty-alpn-java-server:jar:${jetty.version}</ignoredUnusedDeclaredDependency>
                                 <ignoredUnusedDeclaredDependency>${project.groupId}:exist-jetty-config:jar:${project.version}</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.eclipse.jetty.ee10.websocket:jetty-ee10-websocket-jakarta-client:jar:${jetty.version}</ignoredUnusedDeclaredDependency>
+                                <ignoredUnusedDeclaredDependency>org.apache.mina:mina-core</ignoredUnusedDeclaredDependency>
                             </ignoredUnusedDeclaredDependencies>
 
                             <ignoredNonTestScopedDependencies>
@@ -1088,6 +1088,150 @@ The BaseX Team. The original license statement is also included below.]]></pream
                             <fileMask>XQueryLexer.java</fileMask>
                             <findRegex>new Integer</findRegex>
                             <replaceValue>Integer.valueOf</replaceValue>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <!--
+                Generates org/exist/util/GeneratedSchemaVersions.java from each canonical XSD's
+                xs:schema/@version (see ../schema/generate-schema-version.xsl), runs on every
+                normal build. Unlike ../schema/governance.xsl (phase=none, CI-invoked-only), this
+                means SchemaVersion.java's version constants can never silently drift from
+                schema/*.xsd.
+            -->
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>xml-maven-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <id>schema-version-codegen</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>transform</goal>
+                        </goals>
+                        <configuration>
+                            <forceCreation>true</forceCreation>
+                            <transformationSets>
+                                <transformationSet>
+                                    <dir>${project.basedir}/../schema</dir>
+                                    <includes>
+                                        <include>GeneratedSchemaVersions.xml</include>
+                                    </includes>
+                                    <stylesheet>${project.basedir}/../schema/generate-schema-version.xsl</stylesheet>
+                                    <outputDir>${project.build.directory}/generated-sources/schema-version/org/exist/util</outputDir>
+                                    <fileMappers>
+                                        <fileMapper implementation="org.codehaus.plexus.components.io.filemappers.FileExtensionMapper">
+                                            <targetExtension>.java</targetExtension>
+                                        </fileMapper>
+                                    </fileMappers>
+                                </transformationSet>
+                            </transformationSets>
+                        </configuration>
+                    </execution>
+                    <!--
+                        Generates this module's test controller-config.xml from the
+                        exist-jetty-config standalone-webapp template via
+                        src/test/resources/standalone-webapp/WEB-INF/controller-config-fixture.xsl
+                        (which imports schema/generate-controller-config-fixture.xsl, see that
+                        stylesheet's header). Runs before process-test-resources.
+                    -->
+                    <execution>
+                        <id>controller-config-fixture-codegen</id>
+                        <phase>generate-test-resources</phase>
+                        <goals>
+                            <goal>transform</goal>
+                        </goals>
+                        <configuration>
+                            <forceCreation>true</forceCreation>
+                            <transformationSets>
+                                <transformationSet>
+                                    <dir>${project.basedir}/../exist-jetty-config/src/main/resources/standalone-webapp/WEB-INF</dir>
+                                    <includes>
+                                        <include>controller-config.xml</include>
+                                    </includes>
+                                    <stylesheet>${project.basedir}/src/test/resources/standalone-webapp/WEB-INF/controller-config-fixture.xsl</stylesheet>
+                                    <outputDir>${project.build.directory}/generated-test-resources/standalone-webapp/WEB-INF</outputDir>
+                                </transformationSet>
+                            </transformationSets>
+                        </configuration>
+                    </execution>
+                    <!--
+                        Generates this module's test conf.xml/collection.xconf.init fixtures from
+                        canonical via the matching src/test/resources-filtered/.../conf-fixture.xsl
+                        (which imports ../schema/generate-conf-fixture.xsl, see that stylesheet's
+                        header). Runs before process-test-resources, so the standard testResource
+                        filtering above (the ${basedir} substitution) still applies.
+                    -->
+                    <execution>
+                        <id>conf-fixture-codegen</id>
+                        <phase>generate-test-resources</phase>
+                        <goals>
+                            <goal>transform</goal>
+                        </goals>
+                        <configuration>
+                            <forceCreation>true</forceCreation>
+                            <transformationSets>
+                                <transformationSet>
+                                    <dir>${project.basedir}/../exist-distribution/src/main/config</dir>
+                                    <includes>
+                                        <include>conf.xml</include>
+                                    </includes>
+                                    <stylesheet>${project.basedir}/src/test/resources-filtered/conf-fixture.xsl</stylesheet>
+                                    <outputDir>${project.build.directory}/generated-test-resources</outputDir>
+                                </transformationSet>
+                                <transformationSet>
+                                    <dir>${project.basedir}/../exist-distribution/src/main/config</dir>
+                                    <includes>
+                                        <include>conf.xml</include>
+                                    </includes>
+                                    <stylesheet>${project.basedir}/src/test/resources-filtered/org/exist/xquery/conf-fixture.xsl</stylesheet>
+                                    <outputDir>${project.build.directory}/generated-test-resources/org/exist/xquery</outputDir>
+                                </transformationSet>
+                                <transformationSet>
+                                    <dir>${project.basedir}/../exist-distribution/src/main/config</dir>
+                                    <includes>
+                                        <include>conf.xml</include>
+                                    </includes>
+                                    <stylesheet>${project.basedir}/src/test/resources-filtered/org/exist/storage/statistics/conf-fixture.xsl</stylesheet>
+                                    <outputDir>${project.build.directory}/generated-test-resources/org/exist/storage/statistics</outputDir>
+                                </transformationSet>
+                                <transformationSet>
+                                    <dir>${project.basedir}/../exist-distribution/src/main/config</dir>
+                                    <includes>
+                                        <include>conf.xml</include>
+                                    </includes>
+                                    <stylesheet>${project.basedir}/src/test/resources-filtered/org/exist/xquery/functions/transform/conf-fixture.xsl</stylesheet>
+                                    <outputDir>${project.build.directory}/generated-test-resources/org/exist/xquery/functions/transform</outputDir>
+                                </transformationSet>
+                                <transformationSet>
+                                    <dir>${project.basedir}/../exist-distribution/src/main/config</dir>
+                                    <includes>
+                                        <include>collection.xconf.init</include>
+                                    </includes>
+                                    <stylesheet>${project.basedir}/../schema/generate-conf-fixture.xsl</stylesheet>
+                                    <outputDir>${project.build.directory}/generated-test-resources</outputDir>
+                                </transformationSet>
+                            </transformationSets>
+                        </configuration>
+                    </execution>
+                </executions>
+            </plugin>
+            <plugin>
+                <groupId>org.codehaus.mojo</groupId>
+                <artifactId>build-helper-maven-plugin</artifactId>
+                <version>3.6.1</version>
+                <executions>
+                    <execution>
+                        <id>add-schema-version-source</id>
+                        <phase>generate-sources</phase>
+                        <goals>
+                            <goal>add-source</goal>
+                        </goals>
+                        <configuration>
+                            <sources>
+                                <source>${project.build.directory}/generated-sources/schema-version</source>
+                            </sources>
                         </configuration>
                     </execution>
                 </executions>
@@ -1174,6 +1318,18 @@ The BaseX Team. The original license statement is also included below.]]></pream
 
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-jar-plugin</artifactId>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>test-jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+            </plugin>
+
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-surefire-plugin</artifactId>
                 <dependencies>
                     <dependency>
@@ -1193,115 +1349,54 @@ The BaseX Team. The original license statement is also included below.]]></pream
                     </dependency>
                 </dependencies>
                 <configuration>
-                    <argLine>@{jacocoArgLine} -Dfile.encoding=${project.build.sourceEncoding} -Dexist.recovery.progressbar.hide=true</argLine>
+                    <skip>${skipUnitTests}</skip>
+                    <argLine>@{jacocoArgLine} --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED -Dfile.encoding=${project.build.sourceEncoding} -Dexist.recovery.progressbar.hide=true</argLine>
                     <systemPropertyVariables>
                         <jetty.home>${project.basedir}/../exist-jetty-config/target/classes/org/exist/jetty</jetty.home>
                         <exist.configurationFile>${project.build.testOutputDirectory}/conf.xml</exist.configurationFile>
                         <exist.jetty.standalone.webapp.dir>${project.build.testOutputDirectory}/standalone-webapp</exist.jetty.standalone.webapp.dir>
-                        <log4j.configurationFile>${project.build.testOutputDirectory}/log4j2.xml</log4j.configurationFile>
+                        <exist.jetty.portal.dir>${project.basedir}/../exist-jetty-config/src/main/resources/org/exist/jetty/etc/webapps/portal</exist.jetty.portal.dir>
+                        <log4j.configurationFile>${exist.log4j.testConfigurationFile}</log4j.configurationFile>
                     </systemPropertyVariables>
 
                     <excludes>
 
-                        <!-- NOTE: these can still exhibit deadlocks -->
+                        <!-- NOTE: these can still exhibit deadlocks
+                                 see https://github.com/eXist-db/exist/issues/4140
+                                 see https://github.com/eXist-db/exist/issues/3685 -->
                         <exclude>org.exist.collections.ConcurrencyTest</exclude>
+
+                        <!-- Hangs both locally and on CI during BrokerPool shutdown;
+                                 root cause not fully resolved (isShuttingDownOrDown fix was insufficient).
+                                 see https://github.com/eXist-db/exist/pull/6153 -->
                         <exclude>org.exist.xmldb.concurrent.FragmentsTest</exclude>
-
-                        <!-- NOTE: these tests appear to be invalid -->
-                        <exclude>org.exist.xmldb.concurrent.ConcurrentResourceTest2</exclude>
-                        <exclude>org.exist.xmldb.concurrent.ConcurrentResourceTest3</exclude>
-
-                        <!-- NOTE: these take a long time to run and should become integration tests via maven-failsafe-plugin -->
-                        <exclude>org.exist.http.underheavyload.DatabaseUnderLoadTest</exclude>
-                        <exclude>org.exist.storage.lock.DeadlockTest</exclude>
-                        <exclude>org.exist.storage.RemoveCollectionTest</exclude>
-                        <exclude>org.exist.xmldb.ShutdownTest</exclude>
-
-                        <!-- NOTE: this never completes under Java 8 on Travis CI Mac platform! -->
-                        <exclude>org.exist.xmlrpc.MoveResourceTest</exclude>
                     </excludes>
                 </configuration>
+            </plugin>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-failsafe-plugin</artifactId>
+                <configuration>
+                    <argLine>@{jacocoArgLine} --add-modules jdk.incubator.vector --enable-native-access=ALL-UNNAMED -Dfile.encoding=${project.build.sourceEncoding} -Dexist.recovery.progressbar.hide=true</argLine>
+                    <systemPropertyVariables>
+                        <jetty.home>${project.basedir}/../exist-jetty-config/target/classes/org/exist/jetty</jetty.home>
+                        <exist.configurationFile>${project.build.testOutputDirectory}/conf.xml</exist.configurationFile>
+                        <exist.jetty.standalone.webapp.dir>${project.build.testOutputDirectory}/standalone-webapp</exist.jetty.standalone.webapp.dir>
+                        <exist.jetty.portal.dir>${project.basedir}/../exist-jetty-config/src/main/resources/org/exist/jetty/etc/webapps/portal</exist.jetty.portal.dir>
+                        <log4j.configurationFile>${exist.log4j.testConfigurationFile}</log4j.configurationFile>
+                    </systemPropertyVariables>
+                </configuration>
+                <executions>
+                    <execution>
+                        <goals>
+                            <goal>integration-test</goal>
+                            <goal>verify</goal>
+                        </goals>
+                    </execution>
+                </executions>
             </plugin>
         </plugins>
 
     </build>
-
-    <profiles>
-        <profile>
-            <!--
-            Disable parallel tests on Windows in CI, seems to cause an occasional issue with
-            Surefire that produces the Maven error: 'Corrupted channel by directly writing to native stream in forked JVM'.
-            -->
-            <id>windows-disable-parallel-ci-testing</id>
-            <activation>
-                <os>
-                    <family>windows</family>
-                </os>
-                <property>
-                    <name>env.GITHUB_ACTIONS</name>
-                    <value>true</value>
-                </property>
-            </activation>
-            <build>
-                <plugins>
-                    <plugin>
-                        <groupId>org.apache.maven.plugins</groupId>
-                        <artifactId>maven-surefire-plugin</artifactId>
-                        <dependencies>
-                            <dependency>
-                                <groupId>org.junit.jupiter</groupId>
-                                <artifactId>junit-jupiter-engine</artifactId>
-                                <version>${junit.jupiter.version}</version>
-                            </dependency>
-                            <dependency>
-                                <groupId>org.junit.vintage</groupId>
-                                <artifactId>junit-vintage-engine</artifactId>
-                                <version>${junit.jupiter.version}</version>
-                            </dependency>
-                            <dependency>
-                                <groupId>org.objenesis</groupId>
-                                <artifactId>objenesis</artifactId>
-                                <version>${objenesis.version}</version>
-                            </dependency>
-                        </dependencies>
-                        <configuration>
-                            <forkNode implementation="org.apache.maven.plugin.surefire.extensions.SurefireForkNodeFactory" />
-                            <forkCount>1C</forkCount>
-                            <reuseForks>false</reuseForks>
-                            <argLine>-Dfile.encoding=${project.build.sourceEncoding} -Dexist.recovery.progressbar.hide=true</argLine>
-                            <systemPropertyVariables>
-                                <jetty.home>${project.basedir}/../exist-jetty-config/target/classes/org/exist/jetty</jetty.home>
-                                <exist.configurationFile>${project.build.testOutputDirectory}/conf.xml</exist.configurationFile>
-                                <exist.jetty.standalone.webapp.dir>${project.build.testOutputDirectory}/standalone-webapp</exist.jetty.standalone.webapp.dir>
-                                <log4j.configurationFile>${project.build.testOutputDirectory}/log4j2.xml</log4j.configurationFile>
-                            </systemPropertyVariables>
-                            <excludes>
-                                <!-- NOTE: this test occasionally fails on Windows CI
-                                 but not on some other Windows systems :-/ -->
-                                <exclude>org.exist.storage.lock.CollectionLocksTest</exclude>
-
-                                <!-- NOTE: these can still exhibit deadlocks -->
-                                <exclude>org.exist.collections.ConcurrencyTest</exclude>
-                                <exclude>org.exist.xmldb.concurrent.FragmentsTest</exclude>
-
-                                <!-- NOTE: these tests appear to be invalid -->
-                                <exclude>org.exist.xmldb.concurrent.ConcurrentResourceTest2</exclude>
-                                <exclude>org.exist.xmldb.concurrent.ConcurrentResourceTest3</exclude>
-
-                                <!-- NOTE: these take a long time to run and should become integration tests via maven-failsafe-plugin -->
-                                <exclude>org.exist.http.underheavyload.DatabaseUnderLoadTest</exclude>
-                                <exclude>org.exist.storage.lock.DeadlockTest</exclude>
-                                <exclude>org.exist.storage.RemoveCollectionTest</exclude>
-                                <exclude>org.exist.xmldb.ShutdownTest</exclude>
-
-                                <!-- NOTE: this never completes under Java 8 on Travis CI Mac platform! -->
-                                <exclude>org.exist.xmlrpc.MoveResourceTest</exclude>
-                            </excludes>
-                        </configuration>
-                    </plugin>
-                </plugins>
-            </build>
-        </profile>
-    </profiles>
 
 </project>

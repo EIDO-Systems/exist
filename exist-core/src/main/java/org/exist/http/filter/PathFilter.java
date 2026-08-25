@@ -41,7 +41,7 @@ import java.util.HashSet;
  * HTTP POST Query Document
  * HTTP DELETE
  * HTTP PUT
-
+ *
  * Created by IntelliJ IDEA.
  * User: lcahlander
  * Date: Aug 18, 2010
@@ -81,8 +81,8 @@ public class PathFilter implements Filter {
         HttpServletRequest httpServletRequest;
         HttpServletResponse httpServletResponse;
 
-        if (servletRequest instanceof HttpServletRequest) {
-            httpServletRequest = (HttpServletRequest)servletRequest;
+        if (servletRequest instanceof HttpServletRequest request) {
+            httpServletRequest = request;
             httpServletResponse = (HttpServletResponse)servletResponse;
         }
         else {

@@ -61,7 +61,7 @@ public class DateConverter implements TypeConverter {
                 if (matcher.matches()) {
                     try {
                         int year = Integer.parseInt(matcher.group(1));
-                        content = (year < 0 ? "-" : "") + String.format("%04d-%02d-%02d", Math.abs(year), Integer.parseInt(matcher.group(2)), Integer.parseInt(matcher.group(3)));
+                        content = (year < 0 ? "-" : "") + "%04d-%02d-%02d".formatted(Math.abs(year), Integer.parseInt(matcher.group(2)), Integer.parseInt(matcher.group(3)));
                     } catch (NumberFormatException e) {
                         // invalid content: ignore
                     }
@@ -69,7 +69,7 @@ public class DateConverter implements TypeConverter {
                 dv = new DateValue(content);
             }
             final long dl = RangeIndexConfigElement.dateToLong(dv);
-            return new LongField(fieldName, dl, LongField.TYPE_NOT_STORED);
+            return new LongField(fieldName, dl, Field.Store.NO);
         } catch (Exception e) {
             // wrong type: ignore
             LOG.debug("Invalid date format: {}", content, e);

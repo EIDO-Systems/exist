@@ -46,6 +46,7 @@ import org.exist.security.Permission;
 import org.exist.security.PermissionDeniedException;
 import org.exist.security.PermissionFactory;
 import org.exist.security.Subject;
+import org.exist.security.internal.aider.UnixStylePermissionAider;
 import org.exist.storage.*;
 import org.exist.storage.io.VariableByteInput;
 import org.exist.storage.io.VariableByteOutputStream;
@@ -116,6 +117,15 @@ public class MutableCollection implements Collection {
     private volatile boolean isTempCollection;
     private final Permission permissions;
     @Deprecated private CollectionMetadata collectionMetadata = null;
+
+    /**
+     * Discards all cached XSD 1.1 schema-by-namespace resolutions -- called alongside
+     * {@code Jaxp.clearXsd11DetectionCache()} by {@code validation:clear-grammar-cache()}
+     * so one admin action clears both XSD-1.1-detection caches, not just the schemaLocation-hint one.
+     */
+    public static void clearXsd11SchemaByNamespaceCache() {
+        Xsd11ValidationHelper.clearSchemaCache();
+    }
 
     /**
      * Constructs a Collection Object (not yet persisted)
@@ -461,8 +471,13 @@ public class MutableCollection implements Collection {
                         child.allDocs(broker, docs, recursive, lockMap);
                     }
                 } catch(final PermissionDeniedException pde) {
-                    //SKIP to next collection
-                    //TODO create an audit log??!
+                    // The caller is permitted to read this collection, but lacks read
+                    // permission on a sub-collection. Skip it and continue: the result is
+                    // a partial document set, not an error.
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("Skipping sub-collection {} during allDocs traversal of {}: {}",
+                                subCol, path, pde.getMessage());
+                    }
                 }
             }
         }
@@ -496,8 +511,13 @@ public class MutableCollection implements Collection {
                         child.allDocs(broker, docs, recursive, lockMap, lockType);
                     }
                 } catch (final PermissionDeniedException pde) {
-                    //SKIP to next collection
-                    //TODO create an audit log??!
+                    // The caller is permitted to read this collection, but lacks read
+                    // permission on a sub-collection. Skip it and continue: the result is
+                    // a partial document set, not an error.
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug("Skipping sub-collection {} during allDocs traversal of {}: {}",
+                                uri, path, pde.getMessage());
+                    }
                 }
             }
         }
@@ -682,6 +702,11 @@ public class MutableCollection implements Collection {
 
     @Override
     public LockedDocument getDocumentWithLock(final DBBroker broker, final XmldbURI name, final LockMode lockMode) throws LockException, PermissionDeniedException {
+        return getDocumentWithLock(broker, name, lockMode, Permission.READ);
+    }
+
+    @Override
+    public LockedDocument getDocumentWithLock(final DBBroker broker, final XmldbURI name, final LockMode lockMode, final int requiredMode) throws LockException, PermissionDeniedException {
         try(final ManagedCollectionLock collectionLock = lockManager.acquireCollectionReadLock(path)) {
 
             // lock the document
@@ -712,13 +737,29 @@ public class MutableCollection implements Collection {
                 unlockFn.run();
                 return null;
             } else {
-                if(!doc.getPermissions().validate(broker.getCurrentSubject(), Permission.READ)) {
+                if(!doc.getPermissions().validate(broker.getCurrentSubject(), requiredMode)) {
                     unlockFn.run();
-                    throw new PermissionDeniedException("Permission denied to read + document: " + name);
+                    throw new PermissionDeniedException("Permission denied, '" + broker.getCurrentSubject().getName()
+                            + "' does not have '" + new UnixStylePermissionAider(requiredMode) + "' access to document: " + name);
                 }
 
                 return new LockedDocument(documentLock, doc);
             }
+        }
+    }
+
+    @Override
+    public Optional<Long> getDocumentLastModified(final XmldbURI name) throws LockException {
+        try(final ManagedCollectionLock collectionLock = lockManager.acquireCollectionReadLock(path);
+                final ManagedDocumentLock docLock = lockManager.acquireDocumentReadLock(getURI().append(name.lastSegment()))) {
+
+            final DocumentImpl doc = documents.get(name.lastSegmentString());
+
+            // NOTE: early release of Collection lock inline with Asymmetrical Locking scheme
+            collectionLock.close();
+
+            // NOTE: deliberately no permission check — see Collection#getDocumentLastModified
+            return doc == null ? Optional.empty() : Optional.of(doc.getLastModified());
         }
     }
 
@@ -945,6 +986,7 @@ public class MutableCollection implements Collection {
                 }
             });
 
+            LOG.debug("loadCollection {}: collectionId={} loaded {} documents into cache", path, collectionId, documents.size());
             return collection;
 //        }
     }
@@ -1114,9 +1156,8 @@ public class MutableCollection implements Collection {
             // Store XML Document
 
             final BiConsumer2E<XMLReader, IndexInfo, SAXException, EXistException> validatorFn = (xmlReader1, validateIndexInfo) -> {
-                validateIndexInfo.setReader(xmlReader1, null);
                 try {
-                      xmlReader1.parse(source);
+                    Xsd11ValidationHelper.parseOrValidateXmlSource(broker, xmlReader1, validateIndexInfo, source);
                 } catch(final SAXException e) {
                     throw new SAXException("The XML parser reported a problem: " + e.getMessage(), e);
                 } catch(final IOException e) {
@@ -1126,8 +1167,7 @@ public class MutableCollection implements Collection {
 
             final BiConsumer2E<XMLReader, IndexInfo, SAXException, EXistException> parserFn = (xmlReader1, storeIndexInfo) -> {
                 try {
-                    storeIndexInfo.setReader(xmlReader1, null);
-                    xmlReader1.parse(source);
+                    Xsd11ValidationHelper.parseOrValidateXmlSource(broker, xmlReader1, storeIndexInfo, source);
                 } catch(final IOException e) {
                     throw new EXistException(e);
                 }
@@ -1962,7 +2002,9 @@ public class MutableCollection implements Collection {
             return broker.getIndexConfiguration();
         }
         //... otherwise return the general config (the broker's one)
-        return conf.getIndexConfiguration();
+        // Fall back to broker config when collection.xconf has no <index> element (fixes #2948)
+        final IndexSpec spec = conf.getIndexConfiguration();
+        return (spec != null) ? spec : broker.getIndexConfiguration();
     }
 
     @Override

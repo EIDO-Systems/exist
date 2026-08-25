@@ -81,8 +81,9 @@ public class IndexStatistics extends AbstractIndex implements RawBackupSupport {
     public void configure(BrokerPool pool, Path dataDir, Element config) throws DatabaseConfigurationException {
         super.configure(pool, dataDir, config);
         String fileName = "stats.dbx";
-        if (config.hasAttribute("file"))
-            {fileName = config.getAttribute("file");}
+        if (config.hasAttribute("file")) {
+            fileName = config.getAttribute("file");
+        }
         dataFile = dataDir.resolve(fileName);
     }
 
@@ -140,8 +141,9 @@ public class IndexStatistics extends AbstractIndex implements RawBackupSupport {
 
 	@Override
 	public void backupToArchive(RawDataBackup backup) throws IOException {
-
-        try(final OutputStream os = backup.newEntry(FileUtils.fileName(dataFile))) {
+        // Do not use try-with-resources: closing the OutputStream would close the entire backup
+        try {
+            final OutputStream os = backup.newEntry(FileUtils.fileName(dataFile));
             Files.copy(dataFile, os);
         } finally {
             backup.closeEntry();

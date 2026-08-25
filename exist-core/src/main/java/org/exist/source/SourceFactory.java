@@ -29,7 +29,6 @@ import java.net.URL;
 import java.nio.file.Files;
 import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
@@ -40,9 +39,11 @@ import org.exist.dom.persistent.LockedDocument;
 import org.exist.security.PermissionDeniedException;
 import org.exist.storage.BrokerPool;
 import org.exist.storage.DBBroker;
+import org.exist.storage.ExecutableResource;
 import org.exist.storage.lock.Lock.LockMode;
 import org.exist.storage.serializers.Serializer;
 import org.exist.util.FileUtils;
+import org.exist.util.MimeType;
 import org.exist.xmldb.XmldbURI;
 import org.xml.sax.SAXException;
 
@@ -76,6 +77,37 @@ public class SourceFactory {
      * @throws IOException if a general I/O error occurs whilst accessing the resource.
      */
     public static @Nullable Source getSource(final DBBroker broker, @Nullable final String contextPath, final String location, final boolean checkXQEncoding) throws IOException, PermissionDeniedException {
+        return getSource(broker, contextPath, location, checkXQEncoding, false);
+    }
+
+    /**
+     * Create a {@link Source} object for a resource which is about to be COMPILED AND EXECUTED as an
+     * XQuery, rather than read as data.
+     *
+     * A resource in the database is resolved on {@link org.exist.security.Permission#EXECUTE} instead
+     * of {@link org.exist.security.Permission#READ}, so that a caller which may run a stored query but
+     * not read it gets its source — the database reads it on their behalf, as a kernel reads a
+     * {@code --x} binary. Resources outside the database are unaffected.
+     *
+     * The caller must derive the error disclosure level from the returned source before it compiles,
+     * see {@link org.exist.xquery.ErrorDisclosure#of(Source, org.exist.security.Subject)}.
+     *
+     * @param broker the eXist-db DBBroker
+     * @param contextPath the context path of the resource.
+     * @param location the location of the resource (relative to the {@code contextPath}).
+     * @param checkXQEncoding where we need to check the encoding of the XQuery.
+     *
+     * @return The Source of the resource, or null if the resource cannot be found.
+     *
+     * @throws PermissionDeniedException if the resource resides in the database and the calling user
+     *     may not execute it.
+     * @throws IOException if a general I/O error occurs whilst accessing the resource.
+     */
+    public static @Nullable Source getSourceForExecution(final DBBroker broker, @Nullable final String contextPath, final String location, final boolean checkXQEncoding) throws IOException, PermissionDeniedException {
+        return getSource(broker, contextPath, location, checkXQEncoding, true);
+    }
+
+    private static @Nullable Source getSource(final DBBroker broker, @Nullable final String contextPath, final String location, final boolean checkXQEncoding, final boolean forExecution) throws IOException, PermissionDeniedException {
         Source source = null;
 
         /* resource: */
@@ -98,25 +130,29 @@ public class SourceFactory {
                 }
             } catch (final IllegalArgumentException e) {
                 // this is allowed if the location is already an absolute URI, below we will try using other schemes
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("xmldb URI parse failed for contextPath={}, location={}: {}",
+                            contextPath, location, e.getMessage());
+                }
                 pathUri = null;
             }
 
             if (pathUri != null) {
-                source = getSource_fromDb(broker, pathUri);
+                source = getSourceFromDb(broker, pathUri, forExecution);
             }
         }
 
         /* /db */
         if (source == null
-                && ((location.startsWith("/db") && !Files.exists(Paths.get(firstPathSegment(location))))
-                || (contextPath != null && contextPath.startsWith("/db") && !Files.exists(Paths.get(firstPathSegment(contextPath)))))) {
+                && ((location.startsWith("/db") && !Files.exists(Path.of(firstPathSegment(location))))
+                || (contextPath != null && contextPath.startsWith("/db") && !Files.exists(Path.of(firstPathSegment(contextPath)))))) {
             final XmldbURI pathUri;
             if (contextPath == null || ".".equals(contextPath)) {
                 pathUri = XmldbURI.create(location);
             } else {
                 pathUri = XmldbURI.create(contextPath).append(location);
             }
-            source = getSource_fromDb(broker, pathUri);
+            source = getSourceFromDb(broker, pathUri, forExecution);
         }
 
         /* file:// or location without scheme (:/) is assumed to be a file */
@@ -137,6 +173,10 @@ public class SourceFactory {
                 final URL url = new URL(location);
                 source = new URLSource(url);
             } catch (final MalformedURLException e) {
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("Source location is not a well-formed URL, returning null: {} ({})",
+                            location, e.getMessage());
+                }
                 return null;
             }
         }
@@ -156,14 +196,18 @@ public class SourceFactory {
             return new ClassLoaderSource(location);
         }
 
-        final Path rootPath = Paths.get(contextPath.substring(ClassLoaderSource.PROTOCOL.length()));
+        final Path rootPath = Path.of(contextPath.substring(ClassLoaderSource.PROTOCOL.length()));
 
         // 1) try resolving location as child
         final Path childLocation = rootPath.resolve(location);
         try {
             return new ClassLoaderSource(ClassLoaderSource.PROTOCOL + childLocation.toString().replace('\\', '/'));
         } catch (final IOException e) {
-            // no-op, we will try again below
+            // child resolution missed; fall through to sibling resolution below
+            if (LOG.isDebugEnabled()) {
+                LOG.debug("Classpath source not resolvable as child of {}: {} ({})",
+                        rootPath, childLocation, e.getMessage());
+            }
         }
 
         // 2) try resolving location as sibling
@@ -179,7 +223,26 @@ public class SourceFactory {
      *
      * @return the source, or null if there is no such resource in the db indicated by {@code path}.
      */
-    private static @Nullable Source getSource_fromDb(final DBBroker broker, final XmldbURI path) throws PermissionDeniedException, IOException {
+    private static @Nullable Source getSourceFromDb(final DBBroker broker, final XmldbURI path, final boolean forExecution) throws PermissionDeniedException, IOException {
+        if (forExecution) {
+            // gate on EXECUTE, not READ: the source is compiled on the caller's behalf
+            try (final ExecutableResource executable = broker.getResourceForExecution(path)) {
+                if (executable == null) {
+                    return null;
+                }
+
+                // resolve on EXECUTE only for something that is actually a stored query: a binary
+                // resource with the xquery mime type. Anything else (an XML resource, or a binary of
+                // another type merely labelled otherwise) is not an execution target, so fall through
+                // to the READ-gated path — matching RESTServer.getResourceForRequest
+                final DocumentImpl resource = executable.document().getDocument();
+                if (resource.getResourceType() == DocumentImpl.BINARY_FILE
+                        && MimeType.XQUERY_TYPE.getName().equals(resource.getMimeType())) {
+                    return new DBSource(broker.getBrokerPool(), (BinaryDocument) resource, true);
+                }
+            }
+        }
+
         Source source = null;
         try(final LockedDocument lockedResource = broker.getXMLResource(path, LockMode.READ_LOCK)) {
             if (lockedResource != null) {
@@ -219,9 +282,9 @@ public class SourceFactory {
         try {
             final Path p;
             if (contextPath == null) {
-                p = Paths.get(locationPath);
+                p = Path.of(locationPath);
             } else {
-                p = Paths.get(contextPath, locationPath);
+                p = Path.of(contextPath, locationPath);
             }
 
             if (Files.isReadable(p)) {
@@ -229,30 +292,42 @@ public class SourceFactory {
                 source = new FileSource(p, checkXQEncoding);
             }
         } catch (final InvalidPathException e) {
-            // continue trying
+            // not a valid path on this filesystem; fall through to next resolution attempt
+            if (LOG.isTraceEnabled()) {
+                LOG.trace("File source path invalid (contextPath={}, location={}): {}",
+                        contextPath, location, e.getMessage());
+            }
         }
 
         if (source == null) {
             try {
-                final Path p2 = Paths.get(locationPath);
+                final Path p2 = Path.of(locationPath);
                 if (Files.isReadable(p2)) {
                     locationPath = p2.toUri().toASCIIString();
                     source = new FileSource(p2, checkXQEncoding);
                 }
             } catch (final InvalidPathException e) {
-                // continue trying
+                // not a valid path on this filesystem; fall through to next resolution attempt
+                if (LOG.isTraceEnabled()) {
+                    LOG.trace("File source path invalid (contextPath={}, location={}): {}",
+                            contextPath, location, e.getMessage());
+                }
             }
         }
 
         if (source == null && contextPath != null) {
             try {
-                final Path p3 = Paths.get(contextPath).toAbsolutePath().resolve(locationPath);
+                final Path p3 = Path.of(contextPath).toAbsolutePath().resolve(locationPath);
                 if (Files.isReadable(p3)) {
                     locationPath = p3.toUri().toASCIIString();
                     source = new FileSource(p3, checkXQEncoding);
                 }
             } catch (final InvalidPathException e) {
-                // continue trying
+                // not a valid path on this filesystem; fall through to next resolution attempt
+                if (LOG.isTraceEnabled()) {
+                    LOG.trace("File source path invalid (contextPath={}, location={}): {}",
+                            contextPath, location, e.getMessage());
+                }
             }
         }
 
@@ -261,13 +336,17 @@ public class SourceFactory {
              * Try to load as an absolute path
              */
             try {
-                final Path p4 = Paths.get("/" + locationPath);
+                final Path p4 = Path.of("/" + locationPath);
                 if (Files.isReadable(p4)) {
                     locationPath = p4.toUri().toASCIIString();
                     source = new FileSource(p4, checkXQEncoding);
                 }
             } catch (final InvalidPathException e) {
-                // continue trying
+                // not a valid path on this filesystem; fall through to next resolution attempt
+                if (LOG.isTraceEnabled()) {
+                    LOG.trace("File source path invalid (contextPath={}, location={}): {}",
+                            contextPath, location, e.getMessage());
+                }
             }
         }
 
@@ -276,13 +355,17 @@ public class SourceFactory {
              * Try to load from the folder of the contextPath
              */
             try {
-                final Path p5 = Paths.get(contextPath).resolveSibling(locationPath);
+                final Path p5 = Path.of(contextPath).resolveSibling(locationPath);
                 if (Files.isReadable(p5)) {
                     locationPath = p5.toUri().toASCIIString();
                     source = new FileSource(p5, checkXQEncoding);
                 }
             } catch (final InvalidPathException e) {
-                // continue trying
+                // not a valid path on this filesystem; fall through to next resolution attempt
+                if (LOG.isTraceEnabled()) {
+                    LOG.trace("File source path invalid (contextPath={}, location={}): {}",
+                            contextPath, location, e.getMessage());
+                }
             }
         }
 
@@ -294,14 +377,18 @@ public class SourceFactory {
                 Path p6 = null;
                 if(contextPath.startsWith("file:/")) {
                     try {
-                        p6 = Paths.get(new URI(contextPath)).resolveSibling(locationPath);
+                        p6 = Path.of(new URI(contextPath)).resolveSibling(locationPath);
                     } catch (final URISyntaxException e) {
-                        // continue trying
+                        // contextPath is not a parseable URI; fall through to plain-path handling
+                        if (LOG.isTraceEnabled()) {
+                            LOG.trace("contextPath is not a parseable URI (contextPath={}): {}",
+                                    contextPath, e.getMessage());
+                        }
                     }
                 }
 
                 if(p6 == null) {
-                    p6 = Paths.get(contextPath.replaceFirst("^file:/*(/.*)$", "$1")).resolveSibling(locationPath);
+                    p6 = Path.of(contextPath.replaceFirst("^file:/*(/.*)$", "$1")).resolveSibling(locationPath);
                 }
 
                 if (Files.isReadable(p6)) {
@@ -309,7 +396,11 @@ public class SourceFactory {
                     source = new FileSource(p6, checkXQEncoding);
                 }
             } catch (final InvalidPathException e) {
-                // continue trying
+                // not a valid path on this filesystem; fall through to next resolution attempt
+                if (LOG.isTraceEnabled()) {
+                    LOG.trace("File source path invalid (contextPath={}, location={}): {}",
+                            contextPath, location, e.getMessage());
+                }
             }
         }
 
@@ -321,14 +412,18 @@ public class SourceFactory {
                 Path p7 = null;
                 if(contextPath.startsWith("file:/")) {
                     try {
-                        p7 = Paths.get(new URI(contextPath)).resolve(locationPath);
+                        p7 = Path.of(new URI(contextPath)).resolve(locationPath);
                     } catch (final URISyntaxException e) {
-                        // continue trying
+                        // contextPath is not a parseable URI; fall through to plain-path handling
+                        if (LOG.isTraceEnabled()) {
+                            LOG.trace("contextPath is not a parseable URI (contextPath={}): {}",
+                                    contextPath, e.getMessage());
+                        }
                     }
                 }
 
                 if(p7 == null) {
-                    p7 = Paths.get(contextPath.replaceFirst("^file:/*(/.*)$", "$1")).resolve(locationPath);
+                    p7 = Path.of(contextPath.replaceFirst("^file:/*(/.*)$", "$1")).resolve(locationPath);
                 }
 
                 if (Files.isReadable(p7)) {
@@ -336,7 +431,11 @@ public class SourceFactory {
                     source = new FileSource(p7, checkXQEncoding);
                 }
             } catch (final InvalidPathException e) {
-                // continue trying
+                // not a valid path on this filesystem; fall through to next resolution attempt
+                if (LOG.isTraceEnabled()) {
+                    LOG.trace("File source path invalid (contextPath={}, location={}): {}",
+                            contextPath, location, e.getMessage());
+                }
             }
         }
 
@@ -354,7 +453,11 @@ public class SourceFactory {
             } catch (final EXistException e) {
                 LOG.warn(e);
             } catch (final InvalidPathException e) {
-                // continue and abort below
+                // fall through; getSource_fromFile will return null and the caller can fail loudly
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("File source path invalid against EXIST_HOME (location={}): {}",
+                            locationPath, e.getMessage());
+                }
             }
         }
 

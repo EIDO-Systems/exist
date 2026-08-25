@@ -40,7 +40,9 @@ import org.w3c.dom.Node;
 import org.w3c.dom.NodeList;
 
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.exist.security.PermissionDeniedException;
@@ -51,21 +53,33 @@ import org.exist.security.PermissionDeniedException;
  * retrieved via {@link org.exist.storage.DBBroker#getIndexController()}.
  */
 public class IndexController {
+    public enum CollectionIndexRemovalMode {
+        FULL_DROP,
+        CONFIG_ONLY_REINDEX
+    }
 
-    private final Map<String, IndexWorker> indexWorkers = new HashMap<>();
+    /**
+     * Stable iteration order for listener chains and {@link #flush()}.
+     */
+    private static final Comparator<IndexWorker> INDEX_WORKER_ORDER = Comparator
+            .comparingInt(IndexWorker::getChainPriority)
+            .thenComparing(IndexWorker::getIndexId);
+
+    private final Map<String, IndexWorker> indexWorkers = new LinkedHashMap<>();
 
     private final DBBroker broker;
     private StreamListener listener = null;
     private DocumentImpl currentDoc = null;
     private ReindexMode currentMode = ReindexMode.UNKNOWN;
     private boolean reindexing;
+    private ReindexScope reindexScope = ReindexScope.ALL;
 
     public IndexController(final DBBroker broker) {
         this.broker = broker;
         final List<IndexWorker> workers = broker.getBrokerPool().getIndexManager().getWorkers(broker);
-        for (final IndexWorker worker : workers) {
-            indexWorkers.put(worker.getIndexId(), worker);
-        }
+        workers.stream()
+                .sorted(INDEX_WORKER_ORDER)
+                .forEach(worker -> indexWorkers.put(worker.getIndexId(), worker));
     }
 
     /**
@@ -200,14 +214,32 @@ public class IndexController {
      *
      * @param collection the collection to remove
      * @param broker the broker that will perform the operation
-     * @param reindex enable or disable reindexing after removal
+     * @param mode removal semantics, either full drop or config-only reindex
+     *
+     * Caller lock contract: at least a collection READ lock must be held while
+     * invoking workers. WRITE lock callers are also valid.
      * @throws PermissionDeniedException in case user does not have sufficient rights
      */
+    public void removeCollection(final Collection collection, final DBBroker broker, final CollectionIndexRemovalMode mode)
+            throws PermissionDeniedException {
+        final boolean configOnlyReindex = mode == CollectionIndexRemovalMode.CONFIG_ONLY_REINDEX;
+        for (final IndexWorker indexWorker : indexWorkers.values()) {
+            // Keep worker interface stable: explicit mode at call sites, boolean
+            // only at the final API boundary.
+            indexWorker.removeCollection(collection, broker, configOnlyReindex);
+        }
+    }
+
+    /**
+     * @deprecated use {@link #removeCollection(Collection, DBBroker, CollectionIndexRemovalMode)}
+     * with explicit semantics.
+     */
+    @Deprecated
     public void removeCollection(final Collection collection, final DBBroker broker, final boolean reindex)
             throws PermissionDeniedException {
-        for (final IndexWorker indexWorker : indexWorkers.values()) {
-            indexWorker.removeCollection(collection, broker, reindex);
-        }
+        removeCollection(collection, broker, reindex
+                ? CollectionIndexRemovalMode.CONFIG_ONLY_REINDEX
+                : CollectionIndexRemovalMode.FULL_DROP);
     }
 
     /**
@@ -245,6 +277,50 @@ public class IndexController {
 
     private void setReindexing(final boolean reindexing) {
         this.reindexing = reindexing;
+    }
+
+    /**
+     * Execute the given runnable with the reindexing flag set. Used when reindexing
+     * a single document via {@code xmldb:reindex($collection-uri, $doc-uri)} so that
+     * index workers (e.g. Lucene) remove existing entries before adding new ones,
+     * instead of creating duplicates. See GitHub #3977.
+     *
+     * @param runnable the operation to run with reindexing enabled
+     */
+    public void runWithReindexing(final Runnable runnable) {
+        runWithReindexing(runnable, ReindexScope.ALL);
+    }
+
+    /**
+     * Execute the given runnable with the reindexing flag and scope set. Used when
+     * reindexing via {@code xmldb:reindex($collection, $document?, $mode?)} with
+     * mode in {@code "all" | "fulltext" | "vector"}.
+     *
+     * @param runnable the operation to run with reindexing enabled
+     * @param scope   the reindex scope (all, fulltext, or vector)
+     */
+    public void runWithReindexing(final Runnable runnable, final ReindexScope scope) {
+        setReindexing(true);
+        setReindexScope(scope);
+        try {
+            runnable.run();
+        } finally {
+            setReindexScope(ReindexScope.ALL);
+            setReindexing(false);
+        }
+    }
+
+    /**
+     * Returns the current reindex scope for index workers (e.g. Lucene) to consult.
+     * When {@link ReindexScope#FULLTEXT}, workers may skip vector computation; when
+     * {@link ReindexScope#VECTOR}, workers may skip fulltext.
+     */
+    public ReindexScope getReindexScope() {
+        return reindexScope;
+    }
+
+    private void setReindexScope(final ReindexScope scope) {
+        this.reindexScope = scope;
     }
 
     /**

@@ -28,10 +28,8 @@ import java.io.BufferedOutputStream;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.io.Writer;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Properties;
 
 
@@ -48,7 +46,7 @@ public class FileSystemWriter implements BackupWriter {
     private boolean dataWritten = false;
 
     public FileSystemWriter(final String path) throws IOException {
-        this(Paths.get(path));
+        this(Path.of(path));
     }
 
     public FileSystemWriter(final Path file) throws IOException {
@@ -94,7 +92,7 @@ public class FileSystemWriter implements BackupWriter {
     @Override
     public Writer newContents() throws IOException {
         currentContents = currentDir.resolve("__contents__.xml");
-        currentContentsOut = Files.newBufferedWriter(currentContents, StandardCharsets.UTF_8);
+        currentContentsOut = Files.newBufferedWriter(currentContents);
         dataWritten = true;
         return (currentContentsOut);
     }

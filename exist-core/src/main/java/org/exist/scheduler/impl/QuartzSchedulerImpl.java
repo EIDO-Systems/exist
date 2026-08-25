@@ -190,6 +190,69 @@ public class QuartzSchedulerImpl implements Scheduler, BrokerPoolService {
         }
     }
 
+    /**
+     * {@inheritDoc}
+     *
+     * Shutdown sequence:
+     * <ol>
+     *   <li>Spawn a daemon worker that calls {@code scheduler.shutdown(true)} (waits for jobs).</li>
+     *   <li>Wait up to {@code timeoutMs} for that worker to finish.</li>
+     *   <li>If the deadline expires, log every currently-executing job, attempt
+     *       {@code interrupt(jobKey)} on each (no-op for non-{@code InterruptableJob} bodies),
+     *       then call {@code scheduler.shutdown(false)} from the calling thread to release
+     *       the blocked worker. The worker thread's {@code shutdown(true)} will then return
+     *       once the underlying scheduler signals stop.</li>
+     * </ol>
+     */
+    @Override
+    public void shutdown(final long timeoutMs) {
+        if (timeoutMs <= 0) {
+            shutdown(false);
+            return;
+        }
+
+        final org.quartz.Scheduler quartz = getScheduler();
+        if (quartz == null) {
+            return;
+        }
+
+        final Thread shutdownWorker = new Thread(() -> {
+            try {
+                quartz.shutdown(true);
+            } catch (final SchedulerException se) {
+                LOG.warn("Unable to cleanly shutdown the Scheduler: {}", se.getMessage(), se);
+            }
+        }, nameInstanceThread(brokerPool, "scheduler-shutdown-watchdog"));
+        shutdownWorker.setDaemon(true);
+        shutdownWorker.start();
+
+        try {
+            shutdownWorker.join(timeoutMs);
+        } catch (final InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            LOG.warn("Interrupted while waiting for Scheduler shutdown");
+        }
+
+        if (shutdownWorker.isAlive()) {
+            LOG.warn("Scheduler did not stop within {} ms; escalating to forced shutdown", timeoutMs);
+            try {
+                final List<JobExecutionContext> running = quartz.getCurrentlyExecutingJobs();
+                for (final JobExecutionContext jec : running) {
+                    final JobKey key = jec.getJobDetail().getKey();
+                    LOG.warn("Forcing interrupt of running scheduler job: {}", key);
+                    try {
+                        quartz.interrupt(key);
+                    } catch (final UnableToInterruptJobException uije) {
+                        LOG.warn("Job {} is not interruptible: {}", key, uije.getMessage());
+                    }
+                }
+                quartz.shutdown(false);
+            } catch (final SchedulerException se) {
+                LOG.warn("Unable to force-shutdown the Scheduler: {}", se.getMessage(), se);
+            }
+        }
+    }
+
     @Override
     public boolean isShutdown() {
         try {
@@ -520,7 +583,7 @@ public class QuartzSchedulerImpl implements Scheduler, BrokerPoolService {
                 //create a Java job
                 try {
                     final Class<?> jobClass = Class.forName(jobConfig.getResourceName());
-                    final Object jobObject = jobClass.newInstance();
+                    final Object jobObject = jobClass.getDeclaredConstructor().newInstance();
                     if(jobConfig.getType().equals(JobType.SYSTEM)) {
                         if(jobObject instanceof SystemTask task) {
                             task.configure(config, jobConfig.getParameters());
@@ -531,8 +594,8 @@ public class QuartzSchedulerImpl implements Scheduler, BrokerPoolService {
                         }
                         
                     } else {
-                        if(jobObject instanceof JobDescription) {
-                            job = (JobDescription)jobObject;
+                        if(jobObject instanceof JobDescription description) {
+                            job = description;
                             if(jobConfig.getJobName() != null) {
                                 job.setName(jobConfig.getJobName());
                             }
@@ -573,13 +636,13 @@ public class QuartzSchedulerImpl implements Scheduler, BrokerPoolService {
         //if this is a system job, store the BrokerPool in the job's data map
         jobDataMap.put(DATABASE, brokerPool);
         //if this is a system task job, store the SystemTask in the job's data map
-        if(job instanceof SystemTaskJobImpl) {
-            jobDataMap.put(SYSTEM_TASK, ((SystemTaskJobImpl)job).getSystemTask());
+        if(job instanceof SystemTaskJobImpl impl) {
+            jobDataMap.put(SYSTEM_TASK, impl.getSystemTask());
         }
         //if this is a users XQuery job, store the XQuery resource and user in the job's data map
-        if(job instanceof UserXQueryJob) {
-            jobDataMap.put(XQUERY_SOURCE, ((UserXQueryJob)job).getXQueryResource());
-            jobDataMap.put(ACCOUNT, ((UserXQueryJob)job).getUser());
+        if(job instanceof UserXQueryJob queryJob) {
+            jobDataMap.put(XQUERY_SOURCE, queryJob.getXQueryResource());
+            jobDataMap.put(ACCOUNT, queryJob.getUser());
         }
         //copy any parameters into the job's data map
         if(params != null) {

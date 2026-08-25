@@ -28,6 +28,7 @@ import org.exist.Namespaces;
 import org.exist.dom.memtree.SAXAdapter;
 import org.exist.util.ConfigurationHelper;
 import org.exist.util.ExistSAXParserFactory;
+import org.exist.util.SchemaVersion;
 import org.exist.util.SingleInstanceConfiguration;
 import org.exist.xquery.Expression;
 import org.w3c.dom.Document;
@@ -45,7 +46,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.Date;
 
@@ -139,13 +139,16 @@ public class Descriptor implements ErrorHandler {
 
             final Document doc = adapter.getDocument();
 
+            SchemaVersion.logDocumentVersion(LOG, doc.getDocumentElement(), SchemaVersion.DESCRIPTOR, "descriptor.xml");
+
             //load <xquery-app> attribue settings
             if ("true".equals(doc.getDocumentElement().getAttribute("request-replay-log"))) {
-                final Path logFile = Paths.get("request-replay-log.txt");
+                final Path logFile = Path.of("request-replay-log.txt");
                 bufWriteReplayLog = Files.newBufferedWriter(logFile);
                 final String attr = doc.getDocumentElement().getAttribute("filtered");
-                if (attr != null)
+                if (!attr.isEmpty()) {
                     requestsFiltered = "true".equals(attr);
+                }
             }
 
             //load <allow-source> settings
@@ -206,12 +209,12 @@ public class Descriptor implements ErrorHandler {
             String path = elem.getAttribute("path");        //@path
 
             //must be a path to allow source for
-            if (path == null) {
+            if (path.isEmpty()) {
                 LOG.warn("Error element 'xquery' requires an attribute 'path'");
                 return;
             }
             path = path.replaceAll("\\$\\{WEBAPP_HOME\\}",
-                    SingleInstanceConfiguration.getWebappHome().orElse(Paths.get(".")).toAbsolutePath().toString().replace('\\', '/'));
+                    SingleInstanceConfiguration.getWebappHome().orElse(Path.of(".")).toAbsolutePath().toString().replace('\\', '/'));
 
             //store the path
             allowSourceList[i] = path;
@@ -242,20 +245,20 @@ public class Descriptor implements ErrorHandler {
             String view = elem.getAttribute("view");        //@view
 
             //must be a path or a pattern to map from
-            if (path == null /*&& pattern == null*/) {
+            if (path.isEmpty() /*&& pattern == null*/) {
                 LOG.warn("Error element 'map' requires an attribute 'path' or an attribute 'pattern'");
                 return;
             }
             path = path.replaceAll("\\$\\{WEBAPP_HOME\\}",
-                    SingleInstanceConfiguration.getWebappHome().orElse(Paths.get(".")).toAbsolutePath().toString().replace('\\', '/'));
+                    SingleInstanceConfiguration.getWebappHome().orElse(Path.of(".")).toAbsolutePath().toString().replace('\\', '/'));
 
             //must be a view to map to
-            if (view == null) {
+            if (view.isEmpty()) {
                 LOG.warn("Error element 'map' requires an attribute 'view'");
                 return;
             }
             view = view.replaceAll("\\$\\{WEBAPP_HOME\\}",
-                    SingleInstanceConfiguration.getWebappHome().orElse(Paths.get(".")).toAbsolutePath().toString().replace('\\', '/'));
+                    SingleInstanceConfiguration.getWebappHome().orElse(Path.of(".")).toAbsolutePath().toString().replace('\\', '/'));
 
             //store what to map from
            /* if(path != null)

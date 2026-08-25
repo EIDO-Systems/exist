@@ -48,21 +48,23 @@ import org.xmldb.api.base.XMLDBException;
 
 public class LocalResourceSet extends AbstractLocal implements ResourceSet {
 
-    private final static Logger LOG = LogManager.getLogger(LocalResourceSet.class);
+    private static final Logger LOG = LogManager.getLogger(LocalResourceSet.class);
 
     private final List<Object> resources = new ArrayList<>();
     private final Properties outputProperties;
+
+    private boolean closed;
 
     public LocalResourceSet(final Subject user, final BrokerPool pool, final LocalCollection col, final Properties properties, final Sequence val, final String sortExpr) throws XMLDBException {
         super(user, pool, col);
         this.outputProperties = properties;
 
-        if(val.isEmpty()) {
+        if (val.isEmpty()) {
             return;
         }
 
         final Sequence seq;
-        if(Type.subTypeOf(val.getItemType(), Type.NODE) && sortExpr != null) {
+        if (Type.subTypeOf(val.getItemType(), Type.NODE) && sortExpr != null) {
             final SortedNodeSet sorted = new SortedNodeSet(brokerPool, user, sortExpr);
             try {
                     sorted.addAll(val);
@@ -75,7 +77,7 @@ public class LocalResourceSet extends AbstractLocal implements ResourceSet {
         }
 
         try {
-            for(final SequenceIterator i = seq.iterate(); i.hasNext(); ) {
+            for (final SequenceIterator i = seq.iterate(); i.hasNext(); ) {
                 final Item item = i.nextItem();
                 resources.add(item);
             }
@@ -98,8 +100,8 @@ public class LocalResourceSet extends AbstractLocal implements ResourceSet {
 
     @Override
     public void clear() throws XMLDBException {
-        //cleanup any binary values
-        resources.stream().filter((resource) -> (resource instanceof BinaryValue)).forEach((resource) -> {
+        // cleanup any binary values
+        resources.stream().filter(BinaryValue.class::isInstance).forEach(resource -> {
             try {
                 ((BinaryValue) resource).close();
             } catch(final IOException ioe) {
@@ -185,14 +187,14 @@ public class LocalResourceSet extends AbstractLocal implements ResourceSet {
                     coll.setProperties(outputProperties);
             }
             res = new LocalXMLResource(user, brokerPool, coll, p);
-        } else if (r instanceof Node) {
+        } else if (r instanceof Node node) {
             res = new LocalXMLResource(user, brokerPool, collection, XmldbURI.EMPTY_URI);
-            ((LocalXMLResource)res).setContentAsDOM((Node) r);
+            ((LocalXMLResource)res).setContentAsDOM(node);
         } else if (r instanceof AtomicValue) {
             if(r instanceof BinaryValue) {
                 final XmldbURI docId;
-                if(r instanceof Base64BinaryDocument) {
-                    docId = Optional.ofNullable(((Base64BinaryDocument)r).getUrl()).filter(s -> !s.isEmpty()).map(XmldbURI::create).orElse(XmldbURI.EMPTY_URI);
+                if(r instanceof Base64BinaryDocument document) {
+                    docId = Optional.ofNullable(document.getUrl()).filter(s -> !s.isEmpty()).map(XmldbURI::create).orElse(XmldbURI.EMPTY_URI);
                 } else {
                     docId = XmldbURI.EMPTY_URI;
                 }
@@ -201,8 +203,8 @@ public class LocalResourceSet extends AbstractLocal implements ResourceSet {
                 res = new LocalXMLResource(user, brokerPool, collection, XmldbURI.EMPTY_URI);
             }
             res.setContent(r);
-        } else if (r instanceof Resource) {
-            return (Resource)r;
+        } else if (r instanceof Resource resource) {
+            return resource;
         }
 
         res.setProperties(outputProperties);
@@ -233,6 +235,21 @@ public class LocalResourceSet extends AbstractLocal implements ResourceSet {
     @Override
     public void removeResource(final long pos) throws XMLDBException {
         resources.remove(pos);
+    }
+
+    public final boolean isClosed() {
+        return closed;
+    }
+
+    @Override
+    public final void close() throws XMLDBException {
+        if (!isClosed()) {
+            try {
+                clear();
+            } finally {
+                closed = true;
+            }
+        }
     }
 
     class NewResourceIterator implements ResourceIterator {

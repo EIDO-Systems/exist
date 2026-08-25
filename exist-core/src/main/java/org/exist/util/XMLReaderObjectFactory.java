@@ -39,6 +39,7 @@ import org.exist.validation.GrammarPool;
 import org.xml.sax.SAXNotRecognizedException;
 import org.xml.sax.SAXNotSupportedException;
 import org.xml.sax.XMLReader;
+import org.xml.sax.helpers.DefaultHandler;
 import org.xmlresolver.Resolver;
 
 import java.util.Map;
@@ -51,6 +52,9 @@ public class XMLReaderObjectFactory extends BasePooledObjectFactory<XMLReader> i
 
     private static final Logger LOG = LogManager.getLogger(XMLReaderObjectFactory.class);
 
+    /** Shared handler: routes parse errors through SAX without Xerces stderr spam. */
+    static final DefaultHandler SILENT_SAX_ERROR_HANDLER = new DefaultHandler();
+
     public static final String CONFIGURATION_ENTITY_RESOLVER_ELEMENT_NAME = "entity-resolver";
     public static final String CONFIGURATION_CATALOG_ELEMENT_NAME = "catalog";
     public static final String CONFIGURATION_ELEMENT_NAME = "validation";
@@ -60,7 +64,6 @@ public class XMLReaderObjectFactory extends BasePooledObjectFactory<XMLReader> i
     public static final String PROPERTY_VALIDATION_MODE = "validation.mode";
     public static final String CATALOG_RESOLVER = "validation.resolver";
     public static final String CATALOG_URIS = "validation.catalog_uris";
-    public static final String GRAMMAR_POOL = "validation.grammar_pool";
 
     // Xerces feature and property names
     public static final String APACHE_FEATURES_VALIDATION_SCHEMA
@@ -83,7 +86,7 @@ public class XMLReaderObjectFactory extends BasePooledObjectFactory<XMLReader> i
 
     @Override
     public void configure(final Configuration configuration) {
-        this.grammarPool = (GrammarPool) configuration.getProperty(XMLReaderObjectFactory.GRAMMAR_POOL);
+        this.grammarPool = (GrammarPool) configuration.getProperty(GrammarPool.GRAMMAR_POOL_ELEMENT);
         this.resolver = (Resolver) configuration.getProperty(CATALOG_RESOLVER);
         final String option = (String) configuration.getProperty(PROPERTY_VALIDATION_MODE);
         this.validation = VALIDATION_SETTING.fromOption(option);
@@ -99,7 +102,7 @@ public class XMLReaderObjectFactory extends BasePooledObjectFactory<XMLReader> i
         final SAXParser saxParser = saxParserFactory.newSAXParser();
         final XMLReader xmlReader = saxParser.getXMLReader();
 
-        xmlReader.setErrorHandler(null);  // disable default Xerces Error Handler
+        xmlReader.setErrorHandler(SILENT_SAX_ERROR_HANDLER);
 
         return xmlReader;
     }
@@ -137,6 +140,8 @@ public class XMLReaderObjectFactory extends BasePooledObjectFactory<XMLReader> i
                 setReaderFeature(xmlReader, feature.getKey(), feature.getValue());
             }
         }
+
+        xmlReader.setErrorHandler(SILENT_SAX_ERROR_HANDLER);
     }
 
     @Override
@@ -144,7 +149,7 @@ public class XMLReaderObjectFactory extends BasePooledObjectFactory<XMLReader> i
         final XMLReader xmlReader = pooledXmlReader.getObject();
 
         xmlReader.setContentHandler(null);
-        xmlReader.setErrorHandler(null);
+        xmlReader.setErrorHandler(SILENT_SAX_ERROR_HANDLER);
         xmlReader.setProperty(Namespaces.SAX_LEXICAL_HANDLER, null);
     }
 

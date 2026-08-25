@@ -71,7 +71,6 @@ import java.io.InputStream;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -271,7 +270,7 @@ public class Configuration implements ErrorHandler {
 
                 if (is != null) {
                     LOG.info("Reading configuration from classloader");
-                    configFilePath = Optional.of(Paths.get(Configuration.class.getClassLoader().getResource(configFilename).toURI()));
+                    configFilePath = Optional.of(Path.of(Configuration.class.getClassLoader().getResource(configFilename).toURI()));
                 }
             } catch (final Exception e) {
                 // EB: ignore and go forward, e.g. in case there is an absolute
@@ -291,7 +290,7 @@ public class Configuration implements ErrorHandler {
 
                     // EB: try to create existHome based on location of config file
                     // when config file points to absolute file location
-                    final Path absoluteConfigFile = Paths.get(configFilename);
+                    final Path absoluteConfigFile = Path.of(configFilename);
 
                     if (absoluteConfigFile.isAbsolute() && Files.exists(absoluteConfigFile) && Files.isReadable(absoluteConfigFile)) {
                         existHome = Optional.of(absoluteConfigFile.getParent());
@@ -299,7 +298,7 @@ public class Configuration implements ErrorHandler {
                     }
                 }
 
-                Path configFile = Paths.get(configFilename);
+                Path configFile = Path.of(configFilename);
 
                 if (!configFile.isAbsolute() && existHome.isPresent()) {
 
@@ -345,6 +344,9 @@ public class Configuration implements ErrorHandler {
             reader.parse(src);
 
             final Document doc = adapter.getDocument();
+
+            SchemaVersion.logDocumentVersion(LOG, doc.getDocumentElement(), SchemaVersion.CONF,
+                    configFilePath.map(p -> "conf.xml (" + p + ")").orElse("conf.xml"));
 
             //indexer settings
             configureElement(doc, Indexer.CONFIGURATION_ELEMENT_NAME, element -> configureIndexer(doc, element));
@@ -407,6 +409,23 @@ public class Configuration implements ErrorHandler {
         if (nodeList.getLength() > 0) {
             action.apply((Element)nodeList.item(0));
         }
+    }
+
+    /**
+     * Parses an optional boolean attribute from an XML element. If the attribute is missing or empty, returns the default.
+     * Otherwise, returns true for &quot;yes&quot; or &quot;true&quot; (case-insensitive), false for anything else.
+     *
+     * @param elem         The element
+     * @param attrName     The attribute name
+     * @param defaultValue The value when the attribute is missing or empty
+     * @return The parsed boolean
+     */
+    public static boolean parseBooleanAttribute(final Element elem, final String attrName, final boolean defaultValue) {
+        final String value = elem.getAttribute(attrName);
+        if (value == null || value.isEmpty()) {
+            return defaultValue;
+        }
+        return parseBoolean(value, defaultValue);
     }
 
     /**
@@ -568,26 +587,25 @@ public class Configuration implements ErrorHandler {
                 final String uri = elem.getAttribute(BUILT_IN_MODULE_URI_ATTRIBUTE);
 
                 // uri attribute is the identifier and is always required
-                if (uri == null) {
+                if (uri.isEmpty()) {
                     throw (new DatabaseConfigurationException("element 'module' requires an attribute 'uri'"));
+                }
+
+                // enabled="no" disables the module without removing it from conf.xml
+                if ("no".equalsIgnoreCase(elem.getAttribute("enabled"))) {
+                    LOG.debug("Module '{}' is disabled via enabled=\"no\", skipping", uri);
+                    continue;
                 }
 
                 final String clazz = elem.getAttribute(BUILT_IN_MODULE_CLASS_ATTRIBUTE);
                 final String source = elem.getAttribute(BUILT_IN_MODULE_SOURCE_ATTRIBUTE);
                 // either class or source attribute must be present
-                if (clazz == null && source == null) {
+                if (clazz.isEmpty() && source.isEmpty()) {
                     throw (new DatabaseConfigurationException("element 'module' requires either an attribute " + "'class' or 'src'"));
                 }
 
-                if (source != null) {
-                    // Store src attribute info
-
-                    modulesSourceMap.put(uri, source);
-
-                    LOG.debug("Registered mapping for module '{}' to '{}'", uri, source);
-                } else {
+                if (source.isEmpty()) {
                     // source class attribute info
-
                     // Get class of module
                     final Class<?> moduleClass = lookupModuleClass(uri, clazz);
 
@@ -597,6 +615,10 @@ public class Configuration implements ErrorHandler {
                     }
 
                     LOG.debug("Configured module '{}' implemented in '{}'", uri, clazz);
+                } else {
+                    // Store src attribute info
+                    modulesSourceMap.put(uri, source);
+                    LOG.debug("Registered mapping for module '{}' to '{}'", uri, source);
                 }
 
                 //parse any module parameters
@@ -639,7 +661,7 @@ public class Configuration implements ErrorHandler {
     }
 
     /**
-     * DOCUMENT ME!
+     * Reads the XUpdate configuration.
      *
      * @param xupdate configuration element
      * @throws NumberFormatException if one of the settings is not parseable
@@ -670,9 +692,9 @@ public class Configuration implements ErrorHandler {
                 final String value = attr.getAttribute("value");
                 final String type = attr.getAttribute("type");
 
-                if (name == null || name.isEmpty()) {
+                if (name.isEmpty()) {
                     LOG.warn("Discarded invalid attribute for TransformerFactory: '{}', name not specified", className);
-                } else if (type == null || type.isEmpty() || "string".equalsIgnoreCase(type)) {
+                } else if (type.isEmpty() || "string".equalsIgnoreCase(type)) {
                     attributes.put(name, value);
                 } else if ("boolean".equalsIgnoreCase(type)) {
                     attributes.put(name, Boolean.valueOf(value));
@@ -737,7 +759,7 @@ public class Configuration implements ErrorHandler {
     }
 
     /**
-     * DOCUMENT ME!
+     * Reads the serializer configuration.
      *
      * @param serializer element with serializer settings
      */
@@ -761,11 +783,11 @@ public class Configuration implements ErrorHandler {
                 final Element filterElem = (Element) nlFilters.item(i);
                 final String filterClass = filterElem.getAttribute(CustomMatchListenerFactory.CONFIGURATION_ATTR_CLASS);
 
-                if (filterClass != null) {
+                if (filterClass.isEmpty()) {
+                    LOG.warn("Configuration element " + CustomMatchListenerFactory.CONFIGURATION_ELEMENT + " needs an attribute 'class'");
+                } else {
                     filters.add(filterClass);
                     LOG.debug(PRP_DETAILS, CustomMatchListenerFactory.CONFIG_MATCH_LISTENERS, filterClass);
-                } else {
-                    LOG.warn("Configuration element " + CustomMatchListenerFactory.CONFIGURATION_ELEMENT + " needs an attribute 'class'");
                 }
             }
             setProperty(CustomMatchListenerFactory.CONFIG_MATCH_LISTENERS, filters);
@@ -779,15 +801,15 @@ public class Configuration implements ErrorHandler {
                 final Element filterElem = (Element) backupFilters.item(i);
                 final String filterClass = filterElem.getAttribute(CustomMatchListenerFactory.CONFIGURATION_ATTR_CLASS);
 
-                if (filterClass != null) {
+                if (filterClass.isEmpty()) {
+                    LOG.warn("Configuration element " + SystemExport.CONFIGURATION_ELEMENT + " needs an attribute 'class'");
+                } else {
                     filters.add(filterClass);
                     LOG.debug(PRP_DETAILS, CustomMatchListenerFactory.CONFIG_MATCH_LISTENERS, filterClass);
-                } else {
-                    LOG.warn("Configuration element " + SystemExport.CONFIGURATION_ELEMENT + " needs an attribute 'class'");
                 }
-                if (!filters.isEmpty()) {
-                    setProperty(SystemExport.CONFIG_FILTERS, filters);
-                }
+            }
+            if (!filters.isEmpty()) {
+                setProperty(SystemExport.CONFIG_FILTERS, filters);
             }
         }
     }
@@ -795,7 +817,7 @@ public class Configuration implements ErrorHandler {
     /**
      * Reads the scheduler configuration.
      *
-     * @param scheduler DOCUMENT ME!
+     * @param scheduler the configuration element for the scheduler.
      */
     private void configureScheduler(final Element scheduler) {
         final NodeList nlJobs = scheduler.getElementsByTagName(JobConfig.CONFIGURATION_JOB_ELEMENT_NAME);
@@ -820,6 +842,12 @@ public class Configuration implements ErrorHandler {
     }
 
     private void addJobToList(final List<JobConfig> jobList, final Element job) {
+        // enabled="no" disables the job without removing it from conf.xml
+        if ("no".equalsIgnoreCase(getConfigAttributeValue(job, "enabled"))) {
+            LOG.debug("Job '{}' is disabled via enabled=\"no\", skipping", getConfigAttributeValue(job, JOB_NAME_ATTRIBUTE));
+            return;
+        }
+
         //get the job type
         final String strJobType = getConfigAttributeValue(job, JOB_TYPE_ATTRIBUTE);
 
@@ -885,11 +913,11 @@ public class Configuration implements ErrorHandler {
     }
 
     /**
-     * DOCUMENT ME!
+     * Reads the backend configuration.
      *
-     * @param dbHome
-     * @param con
-     * @throws DatabaseConfigurationException
+     * @param dbHome the database home directory.
+     * @param con the configuration element for the backend.
+     * @throws DatabaseConfigurationException if a configuration error occurs.
      */
     private void configureBackend(final Optional<Path> dbHome, Element con) throws DatabaseConfigurationException {
         configureProperty(con, PROPERTY_DATABASE, PROPERTY_DATABASE);
@@ -1051,7 +1079,7 @@ public class Configuration implements ErrorHandler {
     }
 
     /**
-     * DOCUMENT ME!
+     * Reads the watchDog configuration.
      *
      * @param watchDog element with watchDog settings
      */
@@ -1061,7 +1089,7 @@ public class Configuration implements ErrorHandler {
     }
 
     /**
-     * DOCUMENT ME!
+     * Reads the queryPool configuration.
      *
      * @param queryPool element with queryPool settings
      */
@@ -1090,6 +1118,12 @@ public class Configuration implements ErrorHandler {
 
                 // Get <trigger> element
                 final Element trigger = (Element) nlTrigger.item(i);
+
+                // enabled="no" disables the trigger without removing it from conf.xml
+                if ("no".equalsIgnoreCase(trigger.getAttribute("enabled"))) {
+                    LOG.debug("Startup trigger '{}' is disabled via enabled=\"no\", skipping", trigger.getAttribute("class"));
+                    continue;
+                }
 
                 // Get @class
                 final String startupTriggerClass = trigger.getAttribute("class");
@@ -1175,63 +1209,115 @@ public class Configuration implements ErrorHandler {
             return;
         }
         final NodeList module = ((Element) modules.item(0)).getElementsByTagName(IndexManager.CONFIGURATION_MODULE_ELEMENT_NAME);
-        final IndexModuleConfig[] modConfig = new IndexModuleConfig[module.getLength()];
+        final List<IndexModuleConfig> modConfigList = new ArrayList<>();
 
         for (int i = 0; i < module.getLength(); i++) {
             final Element elem = (Element) module.item(i);
+
+            // enabled="no" disables the index module without removing it from conf.xml
+            if ("no".equalsIgnoreCase(elem.getAttribute("enabled"))) {
+                LOG.debug("Index module '{}' is disabled via enabled=\"no\", skipping", elem.getAttribute(IndexManager.INDEXER_MODULES_ID_ATTRIBUTE));
+                continue;
+            }
+
             final String className = elem.getAttribute(IndexManager.INDEXER_MODULES_CLASS_ATTRIBUTE);
             final String id = elem.getAttribute(IndexManager.INDEXER_MODULES_ID_ATTRIBUTE);
 
-            if (className == null || className.isEmpty()) {
+            if (className.isEmpty()) {
                 throw (new DatabaseConfigurationException("Required attribute class is missing for module"));
             }
 
-            if (id == null || id.isEmpty()) {
+            if (id.isEmpty()) {
                 throw (new DatabaseConfigurationException("Required attribute id is missing for module"));
             }
 
-            modConfig[i] = new IndexModuleConfig(id, className, elem);
+            modConfigList.add(new IndexModuleConfig(id, className, elem));
         }
-        setProperty(IndexManager.PROPERTY_INDEXER_MODULES, modConfig);
+        setProperty(IndexManager.PROPERTY_INDEXER_MODULES, modConfigList.toArray(new IndexModuleConfig[0]));
     }
 
     private void configureValidation(final Optional<Path> dbHome, final Element validation) {
         // Determine validation mode
         configureProperty(validation, XMLReaderObjectFactory.VALIDATION_MODE_ATTRIBUTE, PROPERTY_VALIDATION_MODE);
 
-        // cache
-        setProperty(XMLReaderObjectFactory.GRAMMAR_POOL, new GrammarPool());
-
         // Configure the Entity Resolver
-        final NodeList entityResolver = validation.getElementsByTagName(XMLReaderObjectFactory.CONFIGURATION_ENTITY_RESOLVER_ELEMENT_NAME);
-        if (entityResolver.getLength() == 0) {
-            return;
+        final NodeList entityResolverElements = validation.getElementsByTagName(XMLReaderObjectFactory.CONFIGURATION_ENTITY_RESOLVER_ELEMENT_NAME);
+        if (entityResolverElements.getLength() != 0) {
+            final Element elemEntityResolver = (Element) entityResolverElements.item(0);
+            configureEntityResolver(dbHome, elemEntityResolver);
         }
+
+        // Configure the grammar pool
+        final NodeList grammarPoolElements = validation.getElementsByTagName(GrammarPool.GRAMMAR_POOL_ELEMENT);
+        configureGrammarCache(grammarPoolElements);
+
+    }
+
+    private void configureGrammarCache(final NodeList grammarCacheElements) {
+        if (grammarCacheElements.getLength() == 0) {
+            setProperty(GrammarPool.GRAMMAR_POOL_ELEMENT, new GrammarPool());
+
+        } else {
+            final Element grammarPoolElem = (Element) grammarCacheElements.item(0);
+            configureProperty(grammarPoolElem, GrammarPool.ATTRIBUTE_MAXIMUM_SIZE,
+                    GrammarPool.PROPERTY_MAXIMUM_SIZE, Configuration::asInteger, null);
+            configureProperty(grammarPoolElem, GrammarPool.ATTRIBUTE_EXPIRE_AFTER_ACCESS,
+                    GrammarPool.PROPERTY_EXPIRE_AFTER_ACCESS, Configuration::asInteger, null);
+            setProperty(GrammarPool.GRAMMAR_POOL_ELEMENT,
+                    new GrammarPool(getInteger(GrammarPool.PROPERTY_MAXIMUM_SIZE), getInteger(GrammarPool.PROPERTY_EXPIRE_AFTER_ACCESS)));
+        }
+    }
+
+    private void configureEntityResolver(final Optional<Path> dbHome, final Element entityResolverElement) {
         LOG.info("Creating xmlresolver.org OASIS Catalog resolver");
 
-        final Element elemEntityResolver = (Element) entityResolver.item(0);
-        final NodeList nlCatalogs = elemEntityResolver.getElementsByTagName(XMLReaderObjectFactory.CONFIGURATION_CATALOG_ELEMENT_NAME);
+        final NodeList catalogElements = entityResolverElement
+                .getElementsByTagName(XMLReaderObjectFactory.CONFIGURATION_CATALOG_ELEMENT_NAME);
+        final Path webappHome = getWebappHome(dbHome, catalogElements);
 
-        // Determine webapps directory. SingleInstanceConfiguration cannot
-        // be used at this phase. Trick is to check whether dbHOME is
-        // pointing to a WEB-INF directory, meaning inside the war file.
+        // Store all configured URIs
+        final List<String> catalogUris = getCatalogUris(dbHome, catalogElements, webappHome);
+        setProperty(XMLReaderObjectFactory.CATALOG_URIS, catalogUris);
+
+        // Create and Store the resolver
+        try {
+            final List<Tuple2<String, Optional<InputSource>>> catalogs = catalogUris.stream()
+                    .map(catalogUri -> Tuple(catalogUri, Optional.<InputSource>empty()))
+                    .toList();
+            final Resolver resolver = ResolverFactory.newResolver(catalogs);
+            setProperty(XMLReaderObjectFactory.CATALOG_RESOLVER, resolver);
+        } catch (final URISyntaxException e) {
+            LOG.error("Unable to parse catalog uri: {}", e.getMessage(), e);
+        }
+    }
+
+    /*
+        Determine webapps directory. SingleInstanceConfiguration cannot
+        be used at this phase. Trick is to check whether dbHOME is
+        pointing to a WEB-INF directory, meaning inside the war file.
+     */
+    private static Path getWebappHome(final Optional<Path> dbHome, final NodeList catalogElements) {
+
         final Path webappHome = dbHome.map(h -> {
             if (FileUtils.fileName(h).endsWith("WEB-INF")) {
                 return h.getParent().toAbsolutePath();
             }
             return h.resolve("webapp").toAbsolutePath();
-        }).orElse(Paths.get("webapp").toAbsolutePath());
+        }).orElse(Path.of("webapp").toAbsolutePath());
 
         if (LOG.isDebugEnabled()) {
-            LOG.debug("Found {} catalog uri entries.", nlCatalogs.getLength());
+            LOG.debug("Found {} catalog uri entries.", catalogElements.getLength());
             LOG.debug("Using dbHome={}", dbHome);
             LOG.debug("using webappHome={}", webappHome);
         }
+        return webappHome;
+    }
 
+    private static List<String> getCatalogUris(final Optional<Path> dbHome, final NodeList catalogElements, final Path webappHome) {
         // Get the Catalog URIs
         final List<String> catalogUris = new ArrayList<>();
-        for (int i = 0; i < nlCatalogs.getLength(); i++) {
-            final String uriAttributeValue = ((Element) nlCatalogs.item(i)).getAttribute("uri");
+        for (int i = 0; i < catalogElements.getLength(); i++) {
+            final String uriAttributeValue = ((Element) catalogElements.item(i)).getAttribute("uri");
 
             if (!uriAttributeValue.isEmpty()) {
                 final String uri;
@@ -1249,20 +1335,7 @@ public class Configuration implements ErrorHandler {
                 catalogUris.add(uri);
             }
         }
-
-        // Store all configured URIs
-        setProperty(XMLReaderObjectFactory.CATALOG_URIS, catalogUris);
-
-        // Create and Store the resolver
-        try {
-            final List<Tuple2<String, Optional<InputSource>>> catalogs = catalogUris.stream()
-                    .map(catalogUri -> Tuple(catalogUri, Optional.<InputSource>empty()))
-                    .toList();
-            final Resolver resolver = ResolverFactory.newResolver(catalogs);
-            setProperty(XMLReaderObjectFactory.CATALOG_RESOLVER, resolver);
-        } catch (final URISyntaxException e) {
-            LOG.error("Unable to parse catalog uri: {}", e.getMessage(), e);
-        }
+        return catalogUris;
     }
 
     private void configureRpcServer(final Element validation) throws DatabaseConfigurationException {
@@ -1297,7 +1370,8 @@ public class Configuration implements ErrorHandler {
             return value;
         }
         // If the value has not been overridden in a system property, then get it from the configuration
-        return element.getAttribute(attributeName);
+        final String uuuu = element.getAttribute(attributeName);
+        return uuuu.isEmpty() ? null : element.getAttribute(attributeName);
     }
 
     private <T> void configureProperty(final Element element, final String attributeName, final String propertyName,
@@ -1391,10 +1465,10 @@ public class Configuration implements ErrorHandler {
     }
 
     /**
-     * (non-Javadoc).
+     * Reports a configuration error.
      *
-     * @param exception DOCUMENT ME!
-     * @throws SAXException DOCUMENT ME!
+     * @param exception the exception that occurred.
+     * @throws SAXException if a SAX error occurs.
      * @see org.xml.sax.ErrorHandler#error(org.xml.sax.SAXParseException)
      */
     @Override
@@ -1403,10 +1477,10 @@ public class Configuration implements ErrorHandler {
     }
 
     /**
-     * (non-Javadoc).
+     * Reports a fatal configuration error.
      *
-     * @param exception DOCUMENT ME!
-     * @throws SAXException DOCUMENT ME!
+     * @param exception the exception that occurred.
+     * @throws SAXException if a SAX error occurs.
      * @see org.xml.sax.ErrorHandler#fatalError(org.xml.sax.SAXParseException)
      */
     @Override
@@ -1415,10 +1489,10 @@ public class Configuration implements ErrorHandler {
     }
 
     /**
-     * (non-Javadoc).
+     * Reports a configuration warning.
      *
-     * @param exception DOCUMENT ME!
-     * @throws SAXException DOCUMENT ME!
+     * @param exception the exception that occurred.
+     * @throws SAXException if a SAX error occurs.
      * @see org.xml.sax.ErrorHandler#warning(org.xml.sax.SAXParseException)
      */
     @Override

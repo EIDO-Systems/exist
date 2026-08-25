@@ -21,15 +21,13 @@
  */
 package org.exist.indexing.lucene;
 
-import org.apache.commons.lang3.StringUtils;
 import org.apache.lucene.analysis.Analyzer;
 import org.apache.lucene.document.*;
 import org.apache.lucene.util.BytesRef;
-import org.exist.dom.persistent.DocumentImpl;
 import org.exist.dom.persistent.NodeProxy;
-import org.exist.numbering.NodeId;
 import org.exist.security.PermissionDeniedException;
 import org.exist.storage.DBBroker;
+import org.exist.util.Configuration;
 import org.exist.util.DatabaseConfigurationException;
 import org.exist.xquery.CompiledXQuery;
 import org.exist.xquery.XPathException;
@@ -40,6 +38,7 @@ import org.w3c.dom.Element;
 import javax.annotation.Nonnull;
 import javax.annotation.Nullable;
 import javax.xml.datatype.XMLGregorianCalendar;
+import java.math.BigInteger;
 import java.util.Map;
 import java.util.Optional;
 
@@ -58,6 +57,8 @@ import java.util.Optional;
  */
 public class LuceneFieldConfig extends AbstractFieldConfig {
 
+    private static final BigInteger LONG_MAX = new BigInteger("9223372036854775807");
+    private static final BigInteger LONG_MIN = new BigInteger("-9223372036854775808");
     private static final String ATTR_FIELD_NAME = "name";
     private static final String ATTR_TYPE = "type";
     private static final String ATTR_BINARY = "binary";
@@ -77,12 +78,12 @@ public class LuceneFieldConfig extends AbstractFieldConfig {
         super(config, configElement, namespaces);
 
         fieldName = configElement.getAttribute(ATTR_FIELD_NAME);
-        if (StringUtils.isEmpty(fieldName)) {
+        if (fieldName.isEmpty()) {
             throw new DatabaseConfigurationException("Invalid config: attribute 'name' must be given");
         }
 
         final String typeStr = configElement.getAttribute(ATTR_TYPE);
-        if (StringUtils.isNotEmpty(typeStr)) {
+        if (!typeStr.isEmpty()) {
             try {
                 this.type = Type.getType(typeStr);
             } catch (XPathException e) {
@@ -90,13 +91,10 @@ public class LuceneFieldConfig extends AbstractFieldConfig {
             }
         }
 
-        final String storeStr = configElement.getAttribute(ATTR_STORE);
-        if (StringUtils.isNotEmpty(storeStr)) {
-            this.store = "yes".equalsIgnoreCase(storeStr) || "true".equalsIgnoreCase(storeStr);
-        }
+        this.store = Configuration.parseBooleanAttribute(configElement, ATTR_STORE, true);
 
         final String analyzerOpt = configElement.getAttribute(ATTR_ANALYZER);
-        if (StringUtils.isNotEmpty(analyzerOpt)) {
+        if (!analyzerOpt.isEmpty()) {
             analyzer = analyzers.getAnalyzerById(analyzerOpt);
             if (analyzer == null) {
                 throw new DatabaseConfigurationException("Analyzer for field " + fieldName + " not found");
@@ -104,14 +102,11 @@ public class LuceneFieldConfig extends AbstractFieldConfig {
         }
 
         final String cond = configElement.getAttribute(ATTR_IF);
-        if (StringUtils.isNotEmpty(cond)) {
+        if (!cond.isEmpty()) {
             this.condition = Optional.of(cond);
         }
 
-        final String binaryStr = configElement.getAttribute(ATTR_BINARY);
-        if (StringUtils.isNotEmpty(binaryStr)) {
-            this.binary = StringUtils.equalsAnyIgnoreCase(binaryStr, "true", "yes");
-        }
+        this.binary = Configuration.parseBooleanAttribute(configElement, ATTR_BINARY, false);
     }
 
     @Nonnull
@@ -126,10 +121,10 @@ public class LuceneFieldConfig extends AbstractFieldConfig {
     }
 
     @Override
-    protected void build(DBBroker broker, DocumentImpl document, NodeId nodeId, Document luceneDoc, CharSequence text) {
+    protected void build(DBBroker broker, NodeProxy contextNode, Document luceneDoc, CharSequence text) {
         try {
-            if (checkCondition(broker, document, nodeId)) {
-                doBuild(broker, document, nodeId, luceneDoc, text);
+            if (checkCondition(broker, contextNode)) {
+                doBuild(broker, contextNode, luceneDoc, text);
             }
         } catch (XPathException e) {
             LOG.warn("XPath error while evaluating expression for field named '{}': {}: {}", fieldName, expression, e.getMessage(), e);
@@ -138,8 +133,8 @@ public class LuceneFieldConfig extends AbstractFieldConfig {
         }
     }
 
-    private boolean checkCondition(DBBroker broker, DocumentImpl document, NodeId nodeId) throws PermissionDeniedException, XPathException {
-        if (!condition.isPresent()) {
+    private boolean checkCondition(DBBroker broker, NodeProxy contextNode) throws PermissionDeniedException, XPathException {
+        if (condition.isEmpty()) {
             return true;
         }
 
@@ -151,16 +146,13 @@ public class LuceneFieldConfig extends AbstractFieldConfig {
         }
 
         final XQuery xquery = broker.getBrokerPool().getXQueryService();
-        final NodeProxy currentNode = new NodeProxy(null, document, nodeId);
         try {
-            Sequence result = xquery.execute(broker, compiledCondition, currentNode);
+            Sequence result = xquery.execute(broker, compiledCondition, contextNode);
             return result != null && result.effectiveBooleanValue();
         } catch (PermissionDeniedException | XPathException e) {
-            isValid = false;
             throw e;
         } finally {
-            compiledCondition.reset();
-            compiledCondition.getContext().reset();
+            try { compiledCondition.reset(); } finally { compiledCondition.getContext().reset(); }
         }
     }
 
@@ -194,29 +186,34 @@ public class LuceneFieldConfig extends AbstractFieldConfig {
                 case Type.INTEGER:
                 case Type.LONG:
                 case Type.UNSIGNED_LONG:
-                    long lvalue = Long.parseLong(content);
-                    return new LongField(fieldName, lvalue, LongField.TYPE_STORED);
+                    final BigInteger big = new BigInteger(content.trim());
+                    if (big.compareTo(LONG_MIN) < 0 || big.compareTo(LONG_MAX) > 0) {
+                        throw new IllegalStateException("Lucene field '%s' of type xs:integer cannot store value outside long range (-9223372036854775808 to 9223372036854775807): %s. See https://github.com/eXist-db/exist/issues/4532".formatted(
+                                fieldName, content));
+                    }
+                    long lvalue = big.longValue();
+                    return new LongField(fieldName, lvalue, Field.Store.YES);
                 case Type.INT:
                 case Type.UNSIGNED_INT:
                 case Type.SHORT:
                 case Type.UNSIGNED_SHORT:
                     int ivalue = Integer.parseInt(content);
-                    return new IntField(fieldName, ivalue, IntField.TYPE_STORED);
+                    return new IntField(fieldName, ivalue, Field.Store.YES);
                 case Type.DECIMAL:
                 case Type.DOUBLE:
                     double dvalue = Double.parseDouble(content);
-                    return new DoubleField(fieldName, dvalue, DoubleField.TYPE_STORED);
+                    return new DoubleField(fieldName, dvalue, Field.Store.YES);
                 case Type.FLOAT:
                     float fvalue = Float.parseFloat(content);
-                    return new FloatField(fieldName, fvalue, FloatField.TYPE_STORED);
+                    return new FloatField(fieldName, fvalue, Field.Store.YES);
                 case Type.DATE:
                     DateValue dv = new DateValue(content);
                     long dl = dateToLong(dv);
-                    return new LongField(fieldName, dl, LongField.TYPE_STORED);
+                    return new LongField(fieldName, dl, Field.Store.YES);
                 case Type.TIME:
                     TimeValue tv = new TimeValue(content);
                     long tl = timeToLong(tv);
-                    return new LongField(fieldName, tl, LongField.TYPE_STORED);
+                    return new LongField(fieldName, tl, Field.Store.YES);
                 case Type.DATE_TIME:
                     DateTimeValue dtv = new DateTimeValue(content);
                     String dateStr = dateTimeToString(dtv);

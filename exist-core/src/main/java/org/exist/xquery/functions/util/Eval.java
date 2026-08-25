@@ -78,7 +78,6 @@ import org.xml.sax.SAXException;
 import org.xml.sax.XMLReader;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
-import static org.apache.commons.lang3.StringUtils.isNotEmpty;
 import static org.exist.xquery.FunctionDSL.*;
 import static org.exist.xquery.functions.util.UtilModule.functionSignatures;
 
@@ -100,17 +99,19 @@ public class Eval extends BasicFunction {
             "inner expression. " +
             "The function returns an empty sequence if a whitespace string is passed.";
 
-    private static final String contextArgumentText = "The query inherits the context described by the XML fragment in this parameter. " +
-            "It should have the format:\n" +
-            "<static-context>\n" +
-            "\t<output-size-limit value=\"-1\"/>\n" +
-            "\t<unbind-namespace uri=\"http://exist.sourceforge.net/NS/exist\"/>\n" +
-            "\t<current-dateTime value=\"dateTime\"/>\n" +
-            "\t<implicit-timezone value=\"duration\"/>\n" +
-            "\t<variable name=\"qname\">variable value</variable>\n" +
-            "\t<default-context>explicitly provide default context here</default-context>\n" +
-            "\t<mapModule namespace=\"uri\" uri=\"uri_to_module\"/>\n" +
-            "</static-context>.\n";
+    private static final String contextArgumentText = """
+            The query inherits the context described by the XML fragment in this parameter. \
+            It should have the format:
+            <static-context>
+            	<output-size-limit value="-1"/>
+            	<unbind-namespace uri="http://exist.sourceforge.net/NS/exist"/>
+            	<current-dateTime value="dateTime"/>
+            	<implicit-timezone value="duration"/>
+            	<variable name="qname">variable value</variable>
+            	<default-context>explicitly provide default context here</default-context>
+            	<mapModule namespace="uri" uri="uri_to_module"/>
+            </static-context>.
+            """;
 
     private static final FunctionParameterSequenceType FS_PARAM_EXPRESSION = param(
             "expression", Type.ITEM, evalArgumentText);
@@ -305,11 +306,11 @@ public class Eval extends BasicFunction {
         if (Type.subTypeOf(expr.getType(), Type.ANY_URI)) {
             String uri = null;
 
-            if (querySource instanceof DBSource) {
-                final XmldbURI documentPath = ((DBSource)querySource).getDocumentPath();
+            if (querySource instanceof DBSource source1) {
+                final XmldbURI documentPath = source1.getDocumentPath();
                 uri = XmldbURI.EMBEDDED_SERVER_URI.append(documentPath).removeLastSegment().toString();
-            } else if (querySource instanceof FileSource) {
-                uri = ((FileSource) querySource).getPath().getParent().toString();
+            } else if (querySource instanceof FileSource source) {
+                uri = source.getPath().getParent().toString();
             }
 
             if (uri != null) {
@@ -360,6 +361,14 @@ public class Eval extends BasicFunction {
 
             if (initContextSequence != null) {
                 exprContext = initContextSequence;
+            }
+
+            // If no explicit context was provided and we have a context sequence
+            // from the calling expression (e.g., path expression step), use it.
+            // This allows relative expressions like <a><b/></a>/util:eval('*')
+            // to see the context item.
+            if (exprContext == null && contextSequence != null && !contextSequence.isEmpty()) {
+                exprContext = contextSequence;
             }
 
             Sequence result = null;
@@ -583,17 +592,17 @@ public class Eval extends BasicFunction {
                 final String qname = elem.getAttribute("name");
                 final String source = elem.getAttribute("source");
                 NodeValue value;
-                if (isNotEmpty(source)) {
+                if (!source.isEmpty()) {
                     // load variable contents from URI
                     value = loadVarFromURI(source);
                 } else {
                     value = (NodeValue) elem.getFirstChild();
-                    if (value instanceof ReferenceNode) {
-                        value = ((ReferenceNode) value).getReference();
+                    if (value instanceof ReferenceNode node) {
+                        value = node.getReference();
                     }
                 }
                 final String type = elem.getAttribute("type");
-                if (type != null && Type.subTypeOf(Type.getType(type), Type.ANY_ATOMIC_TYPE)) {
+                if (!type.isEmpty() && Type.subTypeOf(Type.getType(type), Type.ANY_ATOMIC_TYPE)) {
                     innerContext.declareVariable(qname, value.atomize().convertTo(Type.getType(type)));
                 } else {
                     innerContext.declareVariable(qname, value);
@@ -619,15 +628,15 @@ public class Eval extends BasicFunction {
             } else if (child.getNodeType() == Node.ELEMENT_NODE && "unbind-namespace".equals(child.getLocalName())) {
                 final Element elem = (Element) child;
                 //TODO : error check
-                if (elem.getAttribute("uri") != null) {
+                if (elem.hasAttribute("uri")) {
                     innerContext.removeNamespace(elem.getAttribute("uri"));
                 }
             } else if (child.getNodeType() == Node.ELEMENT_NODE && "staticallyKnownDocuments".equals(child.getLocalName())) {
                 final Element elem = (Element) child;
                 //TODO : iterate over the children
                 NodeValue value = (NodeValue) elem.getFirstChild();
-                if (value instanceof ReferenceNode) {
-                    value = ((ReferenceNode) value).getReference();
+                if (value instanceof ReferenceNode node) {
+                    value = node.getReference();
                 }
                 final XmldbURI[] pathes = new XmldbURI[1];
                 //TODO : aggregate !

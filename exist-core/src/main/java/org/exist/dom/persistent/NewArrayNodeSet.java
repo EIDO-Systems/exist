@@ -320,22 +320,14 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
                 if(add) {
                     switch(mode) {
                         case NodeSet.DESCENDANT:
-                            if(Expression.NO_CONTEXT_ID != contextId) {
-                                nodes[i].deepCopyContext(parent, contextId);
-                            } else {
-                                nodes[i].copyContext(parent);
-                            }
+                            NodeProxy.propagatePredicateContextFrom(nodes[i], parent, contextId);
                             if(copyMatches) {
                                 nodes[i].addMatches(parent);
                             }
                             result.add(nodes[i]);
                             break;
                         case NodeSet.ANCESTOR:
-                            if(Expression.NO_CONTEXT_ID != contextId) {
-                                parent.deepCopyContext(nodes[i], contextId);
-                            } else {
-                                parent.copyContext(nodes[i]);
-                            }
+                            NodeProxy.propagatePredicateContextFrom(parent, nodes[i], contextId);
                             if(copyMatches) {
                                 parent.addMatches(nodes[i]);
                             }
@@ -385,22 +377,14 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
                     if(add) {
                         switch(mode) {
                             case NodeSet.DESCENDANT:
-                                if(Expression.NO_CONTEXT_ID != contextId) {
-                                    nodes[i].deepCopyContext(parent, contextId);
-                                } else {
-                                    nodes[i].copyContext(parent);
-                                }
+                                NodeProxy.propagatePredicateContextFrom(nodes[i], parent, contextId);
                                 if(copyMatches) {
                                     nodes[i].addMatches(parent);
                                 }
                                 result.add(nodes[i]);
                                 break;
                             case NodeSet.ANCESTOR:
-                                if(Expression.NO_CONTEXT_ID != contextId) {
-                                    parent.deepCopyContext(nodes[i], contextId);
-                                } else {
-                                    parent.copyContext(nodes[i]);
-                                }
+                                NodeProxy.propagatePredicateContextFrom(parent, nodes[i], contextId);
                                 if(copyMatches) {
                                     parent.addMatches(nodes[i]);
                                 }
@@ -476,11 +460,7 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
                     add = includeSelf;
                 }
                 if(add) {
-                    if(Expression.NO_CONTEXT_ID != contextId) {
-                        ancestor.deepCopyContext(nodes[i], contextId);
-                    } else {
-                        ancestor.copyContext(nodes[i]);
-                    }
+                    NodeProxy.propagatePredicateContextFrom(ancestor, nodes[i], contextId);
                     if(copyMatches) {
                         ancestor.addMatches(nodes[i]);
                     }
@@ -676,7 +656,7 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
 
                     if(Expression.IGNORE_CONTEXT != contextId) {
                         if(Expression.NO_CONTEXT_ID == contextId) {
-                            nodes[i].copyContext(reference);
+                            NodeProxy.propagatePredicateContextFrom(nodes[i], reference, contextId);
                         } else {
                             nodes[i].addContextNode(contextId, reference);
                         }
@@ -735,11 +715,21 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
                 --mid;
             }
             final NodeId refId = reference.getNodeId();
+            // The walk-back at line 734 can position mid at or before the parent
+            // itself when the parent shares the candidate tag. Skip past leading
+            // non-descendants until we enter the subtree, then break when we
+            // leave it: nodes[] is sorted in document order within a document,
+            // so once we exit the parent's subtree we will not re-enter it.
+            boolean enteredSubtree = false;
             for(int i = mid; i < end; i++) {
                 final NodeId currentId = nodes[i].getNodeId();
                 if(!(currentId.isDescendantOf(parentId) || (p != null && parentId.equals(NodeId.DOCUMENT_NODE) && p.getNodeId().getTreeLevel() == 1))) {
+                    if (enteredSubtree) {
+                        break;
+                    }
                     continue;
                 }
+                enteredSubtree = true;
                 if(currentId.getTreeLevel() == refId.getTreeLevel() && currentId.compareTo(refId) > 0) {
                     if (contextId != Expression.IGNORE_CONTEXT
                             && nodes[i].getContext() != null
@@ -750,7 +740,7 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
 
                     if(Expression.IGNORE_CONTEXT != contextId) {
                         if(Expression.NO_CONTEXT_ID == contextId) {
-                            nodes[i].copyContext(reference);
+                            NodeProxy.propagatePredicateContextFrom(nodes[i], reference, contextId);
                         } else {
                             nodes[i].addContextNode(contextId, reference);
                         }
@@ -792,6 +782,7 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
                 if(!reference.getNodeId().isDescendantOf(nodes[j].getNodeId())) {
                     if(position < 0 || ++n == position) {
                         if (contextId != Expression.IGNORE_CONTEXT
+                                && contextId != Expression.NO_CONTEXT_ID
                                 && nodes[j].getContext() != null
                                 && reference.getContext() != null
                                 && nodes[j].getContext().getContextId() == reference.getContext().getContextId()) {
@@ -800,7 +791,7 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
 
                         if(Expression.IGNORE_CONTEXT != contextId) {
                             if(Expression.NO_CONTEXT_ID == contextId) {
-                                nodes[j].copyContext(reference);
+                                NodeProxy.propagatePredicateContextFrom(nodes[j], reference, contextId);
                             } else {
                                 nodes[j].addContextNode(contextId, reference);
                             }
@@ -846,6 +837,7 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
                 if(!reference.getNodeId().isDescendantOf(nodes[j].getNodeId())) {
                     if(position < 0 || ++n == position) {
                         if (contextId != Expression.IGNORE_CONTEXT
+                                && contextId != Expression.NO_CONTEXT_ID
                                 && nodes[j].getContext() != null
                                 && reference.getContext() != null
                                 && nodes[j].getContext().getContextId() == reference.getContext().getContextId()) {
@@ -854,7 +846,7 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
 
                         if(Expression.IGNORE_CONTEXT != contextId) {
                             if(Expression.NO_CONTEXT_ID == contextId) {
-                                nodes[j].copyContext(reference);
+                                NodeProxy.propagatePredicateContextFrom(nodes[j], reference, contextId);
                             } else {
                                 nodes[j].addContextNode(contextId, reference);
                             }
@@ -1108,12 +1100,12 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
     @Override
     public boolean containsReference(final Item item) {
         sort();
-        if (item instanceof Node) {
+        if (item instanceof Node node) {
             @Nullable final Document doc;
-            if (item instanceof Document) {
-                doc = (Document) item;
+            if (item instanceof Document document) {
+                doc = document;
             } else {
-                doc = ((Node) item).getOwnerDocument();
+                doc = node.getOwnerDocument();
             }
 
             if (doc == null || !(doc instanceof DocumentImpl || doc instanceof org.exist.dom.memtree.DocumentImpl)) {
@@ -1121,8 +1113,8 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
             }
 
             final int docId;
-            if (doc instanceof DocumentImpl) {
-                docId = ((DocumentImpl) doc).getDocId();
+            if (doc instanceof DocumentImpl impl) {
+                docId = impl.getDocId();
             } else {
                 docId = (int) ((org.exist.dom.memtree.DocumentImpl) doc).getDocId();
             }
@@ -1141,12 +1133,12 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
     @Override
     public boolean contains(final Item item) {
         sort();
-        if (item instanceof Node) {
+        if (item instanceof Node node) {
             @Nullable final Document doc;
-            if (item instanceof Document) {
-                doc = (Document) item;
+            if (item instanceof Document document) {
+                doc = document;
             } else {
-                doc = ((Node) item).getOwnerDocument();
+                doc = node.getOwnerDocument();
             }
 
             if (doc == null || !(doc instanceof DocumentImpl || doc instanceof org.exist.dom.memtree.DocumentImpl)) {
@@ -1154,8 +1146,8 @@ public class NewArrayNodeSet extends AbstractArrayNodeSet implements ExtNodeSet,
             }
 
             final int docId;
-            if (doc instanceof DocumentImpl) {
-                docId = ((DocumentImpl) doc).getDocId();
+            if (doc instanceof DocumentImpl impl) {
+                docId = impl.getDocId();
             } else {
                 docId = (int) ((org.exist.dom.memtree.DocumentImpl) doc).getDocId();
             }

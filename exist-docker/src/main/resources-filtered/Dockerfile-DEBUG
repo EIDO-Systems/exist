@@ -20,7 +20,7 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 #
 
-FROM openjdk:21-jdk-slim-bullseye
+FROM ${docker.base.image.debug}
 RUN apt-get update && apt-get -y dist-upgrade
 RUN apt-get install -y expat fontconfig     # Install tools required by FOP
 
@@ -30,17 +30,20 @@ COPY autodeploy /exist/autodeploy
 COPY etc /exist/etc
 COPY lib /exist/lib
 COPY logs /exist/logs
+COPY schema /exist/schema
 
-# Build-time metadata as defined at http://label-schema.org
-# and used by autobuilder @hooks/build
-LABEL org.label-schema.build-date=${maven.build.timestamp} \
-      org.label-schema.description="${project.description} (DEBUG version)" \
-      org.label-schema.name="existdb-debug" \
-      org.label-schema.schema-version="1.0" \
-      org.label-schema.url="${project.url}" \
-      org.label-schema.vcs-ref=${build-commit-abbrev} \
-      org.label-schema.vcs-url="${project.scm.url}" \
-      org.label-schema.vendor="existdb"
+# Build-time metadata as defined by OCI
+# https://github.com/opencontainers/image-spec/blob/main/annotations.md
+LABEL org.opencontainers.image.created="${maven.build.timestamp}" \
+      org.opencontainers.image.description="${project.description} (DEBUG version)" \
+      org.opencontainers.image.revision=${git.commit.id} \
+      org.opencontainers.image.version=${project.version} \
+      org.opencontainers.image.url="${docker.url}" \
+      org.opencontainers.image.source="${docker.source}" \
+      org.opencontainers.image.vendor="${docker.vendor}" \
+      org.opencontainers.image.licenses="${docker.licenses}" \
+      org.opencontainers.image.title="${docker.title}-debug" \
+      org.opencontainers.image.base.name=${docker.base.image.debug}
 
 EXPOSE 8080 8443 5005
 
@@ -53,13 +56,16 @@ ARG JVM_JDWP_SUSPEND
 ENV EXIST_HOME=/exist
 ENV CLASSPATH=/exist/lib/${exist.uber.jar.filename}
 
+# FIXME: For vector search SIMD acceleration, add --add-modules jdk.incubator.vector
+#        and --enable-native-access=ALL-UNNAMED to JAVA_TOOL_OPTIONS.
+# Omitted by default because it can cause "Unrecognized option" in some environments; build a custom image or pass at run time if needed.
 ENV JAVA_TOOL_OPTIONS="\
   -Dfile.encoding=UTF8 \
   -Dsun.jnu.encoding=UTF-8 \
   -Djava.awt.headless=true \
   -Dorg.exist.db-connection.cacheSize=${CACHE_MEM:-256}M \
   -Dorg.exist.db-connection.pool.max=${MAX_BROKER:-20} \
-  -Dlog4j.configurationFile=/exist/etc/log4j2.xml \
+  -Dlog4j.configurationFile=/exist/etc/log4j2-container.xml \
   -Dexist.home=/exist \
   -Dexist.configurationFile=/exist/etc/conf.xml \
   -Djetty.home=/exist \

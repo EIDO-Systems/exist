@@ -128,17 +128,19 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
         this.relation   = relation;
         this.truncation = truncation;
 
-        if( ( left instanceof PathExpr ) && ( ( ( PathExpr )left ).getLength() == 1 ) ) {
-            left                  = ( ( PathExpr )left ).getExpression( 0 );
+        Expression leftExpr = left;
+        if( ( leftExpr instanceof PathExpr expr ) && ( expr.getLength() == 1 ) ) {
+            leftExpr              = expr.getExpression( 0 );
             didLeftSimplification = true;
         }
-        add( left );
+        add( leftExpr );
 
-        if( ( right instanceof PathExpr ) && ( ( ( PathExpr )right ).getLength() == 1 ) ) {
-            right                  = ( ( PathExpr )right ).getExpression( 0 );
+        Expression rightExpr = right;
+        if( ( rightExpr instanceof PathExpr expr ) && ( expr.getLength() == 1 ) ) {
+            rightExpr              = expr.getExpression( 0 );
             didRightSimplification = true;
         }
-        add( right );
+        add( rightExpr );
 
         //TODO : should we also use simplify() here ? -pb
         if( didLeftSimplification ) {
@@ -190,7 +192,7 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
         final List<LocationStep> steps = BasicExpressionVisitor.findLocationSteps( getLeft() );
 
         if( !steps.isEmpty() ) {
-            LocationStep firstStep = steps.get( 0 );
+            LocationStep firstStep = steps.getFirst();
             LocationStep lastStep  = steps.getLast();
 
             if( firstStep != null && steps.size() == 1 && firstStep.getAxis() == Constants.SELF_AXIS) {
@@ -364,7 +366,7 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
             }
 
             // If key implements org.exist.storage.Indexable, we can use the index
-            if( key instanceof Indexable ) {
+            if( key instanceof Indexable indexable ) {
 
                 if( LOG.isTraceEnabled() ) {
                     LOG.trace("Using QName range index for key: {}", key.getStringValue());
@@ -375,7 +377,7 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
                 final Collator collator   = ( ( collationArg != null ) ? getCollator( contextSequence ) : null );
 
                 if( truncation == StringTruncationOperator.NONE ) {
-                    temp         = context.getBroker().getValueIndex().find(context.getWatchDog(), relation, contextSequence.getDocumentSet(), contextSet, NodeSet.DESCENDANT, contextQName, ( Indexable )key);
+                    temp         = context.getBroker().getValueIndex().find(context.getWatchDog(), relation, contextSequence.getDocumentSet(), contextSet, NodeSet.DESCENDANT, contextQName, indexable);
                     hasUsedIndex = true;
                 } else {
 
@@ -592,12 +594,12 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
      * Optimized implementation, which can be applied if the left operand returns a node set. In this case, the left expression is executed first. All
      * matching context nodes are then passed to the right expression.
      *
-     * @param   nodes            DOCUMENT ME!
-     * @param   contextSequence  DOCUMENT ME!
+     * @param   nodes            the node set to compare.
+     * @param   contextSequence  the current context sequence.
      *
-     * @return  DOCUMENT ME!
+     * @return  the result of the comparison.
      *
-     * @throws  XPathException  DOCUMENT ME!
+     * @throws  XPathException  if an error occurs.
      */
     protected Sequence nodeSetCompare( NodeSet nodes, Sequence contextSequence ) throws XPathException
     {
@@ -638,13 +640,30 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
 
             for( final NodeProxy item : nodes ) {
                 final AtomicValue lv = item.atomize();
-                final Sequence    rs = getRight().eval(contextSequence, null);
+                ContextItem ctxItem = item.getContext();
+                if( ctxItem != null ) {
+                    // use the context node (e.g. the parent element) so that
+                    // the right operand can resolve sibling attributes correctly
+                    do {
+                        final Sequence rs = getRight().eval(ctxItem.getNode().toSequence(), null);
 
-                for( final SequenceIterator i2 = Atomize.atomize(rs).iterate(); i2.hasNext(); ) {
-                    final AtomicValue rv = i2.nextItem().atomize();
+                        for( final SequenceIterator i2 = Atomize.atomize(rs).iterate(); i2.hasNext(); ) {
+                            final AtomicValue rv = i2.nextItem().atomize();
 
-                    if( compareAtomic( collator, lv, rv ) ) {
-                        result.add( item );
+                            if( compareAtomic( collator, lv, rv ) ) {
+                                result.add( item );
+                            }
+                        }
+                    } while( ( ctxItem = ctxItem.getNextDirect() ) != null );
+                } else {
+                    final Sequence rs = getRight().eval(contextSequence, null);
+
+                    for( final SequenceIterator i2 = Atomize.atomize(rs).iterate(); i2.hasNext(); ) {
+                        final AtomicValue rv = i2.nextItem().atomize();
+
+                        if( compareAtomic( collator, lv, rv ) ) {
+                            result.add( item );
+                        }
                     }
                 }
             }
@@ -661,11 +680,11 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
      * Optimized implementation: first checks if a range index is defined on the nodes in the left argument.
      * Otherwise, fall back to {@link #nodeSetCompare(NodeSet, Sequence)}.
      *
-     * @param   contextSequence  DOCUMENT ME!
+     * @param   contextSequence  the current context sequence.
      *
-     * @return  DOCUMENT ME!
+     * @return  the result of the comparison.
      *
-     * @throws  XPathException  DOCUMENT ME!
+     * @throws  XPathException  if an error occurs.
      */
     protected Sequence quickNodeSetCompare( Sequence contextSequence ) throws XPathException
     {
@@ -803,7 +822,7 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
                 }
 
                 // If key implements org.exist.storage.Indexable, we can use the index
-                if( key instanceof Indexable ) {
+                if( key instanceof Indexable indexable ) {
 
                     if( LOG.isTraceEnabled() ) {
                         LOG.trace("Checking if range index can be used for key: {}", key.getStringValue());
@@ -825,10 +844,10 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
                             NodeSet ns;
 
                             if( indexScan ) {
-                                ns = context.getBroker().getValueIndex().findAll( context.getWatchDog(), relation, docs, nodes, NodeSet.ANCESTOR, ( Indexable )key);
+                                ns = context.getBroker().getValueIndex().findAll( context.getWatchDog(), relation, docs, nodes, NodeSet.ANCESTOR, indexable);
                             } else {
                                 ns = context.getBroker().getValueIndex().find( context.getWatchDog(), relation, docs, nodes, NodeSet.ANCESTOR, myContextQName,
-                                        ( Indexable )key, indexMixed );
+                                        indexable, indexMixed );
                             }
                             hasUsedIndex = true;
 
@@ -1126,13 +1145,13 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
 
 
     /**
-     * DOCUMENT ME!
+     * Checks if an atomic value is an empty string.
      *
-     * @param   lv
+     * @param   lv the atomic value to check.
      *
-     * @return  Whether or not <code>lv</code> is an empty string
+     * @return  Whether or not {@code lv} is an empty string
      *
-     * @throws  XPathException
+     * @throws  XPathException if an error occurs.
      */
     @SuppressWarnings( "unused" )
     private static boolean isEmptyString( AtomicValue lv ) throws XPathException
@@ -1246,10 +1265,10 @@ public class GeneralComparison extends BinaryOp implements Optimizable, IndexUse
 
         String collationURI;
 
-        if( collationArg instanceof Expression ) {
-            collationURI = ( ( Expression )collationArg ).eval(contextSequence, null).getStringValue();
-        } else if( collationArg instanceof StringValue ) {
-            collationURI = ( ( StringValue )collationArg ).getStringValue();
+        if( collationArg instanceof Expression expression ) {
+            collationURI = expression.eval(contextSequence, null).getStringValue();
+        } else if( collationArg instanceof StringValue value ) {
+            collationURI = value.getStringValue();
         } else {
             return( context.getDefaultCollator() );
         }

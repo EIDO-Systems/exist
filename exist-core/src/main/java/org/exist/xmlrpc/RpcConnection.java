@@ -104,7 +104,10 @@ import java.io.*;
 import java.net.URISyntaxException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
-import java.nio.file.*;
+import java.nio.file.Files;
+import java.nio.file.OpenOption;
+import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.util.*;
 import java.util.concurrent.*;
 import java.util.concurrent.locks.Lock;
@@ -595,8 +598,8 @@ public class RpcConnection implements RpcAPI {
         try {
             final DigestType digestType = DigestType.forCommonName(digestAlgorithm);
             final MessageDigest messageDigest = this.<MessageDigest>readDocument(XmldbURI.xmldbUriFor(path)).apply((document, broker, transaction) -> {
-                if (document instanceof BinaryDocument) {
-                    return broker.getBinaryResourceContentDigest(transaction, (BinaryDocument) document, digestType);
+                if (document instanceof BinaryDocument binaryDocument) {
+                    return broker.getBinaryResourceContentDigest(transaction, binaryDocument, digestType);
                 } else {
                     throw new EXistException("Only supported for binary documents");
                 }
@@ -937,7 +940,7 @@ public class RpcConnection implements RpcAPI {
 
     @Override
     public boolean dataBackup(final String dest) {
-        factory.getBrokerPool().triggerSystemTask(new DataBackup(Paths.get(dest)));
+        factory.getBrokerPool().triggerSystemTask(new DataBackup(Path.of(dest)));
         return true;
     }
 
@@ -1485,7 +1488,7 @@ public class RpcConnection implements RpcAPI {
 
                     // As this file can be a non-temporal one, we should not
                     // blindly erase it!
-                    final Path path = Paths.get(localFile);
+                    final Path path = Path.of(localFile);
                     if (!Files.isReadable(path)) {
                         // NOTE: early release of Collection lock inline with Asymmetrical Locking scheme
                         collection.close();
@@ -1954,8 +1957,8 @@ public class RpcConnection implements RpcAPI {
     private @Nullable Map<String, String> nodeMap(final Item item) {
         final Map<String, String> result;
 
-        if (item instanceof NodeValue &&
-                ((NodeValue)item).getImplementationType() == NodeValue.PERSISTENT_NODE) {
+        if (item instanceof NodeValue value &&
+                value.getImplementationType() == NodeValue.PERSISTENT_NODE) {
             final NodeProxy p = (NodeProxy) item;
 
             result = new HashMap<>();
@@ -1994,17 +1997,8 @@ public class RpcConnection implements RpcAPI {
 
         final Optional<String> sortBy = Optional.ofNullable(parameters.get(RpcAPI.SORT_EXPR)).map(Object::toString);
 
-        return this.<Map<String, Object>>readDocument(XmldbURI.createInternal(pathToQuery)).apply((document, broker, transaction) -> {
-            final BinaryDocument xquery = (BinaryDocument) document;
-            if (xquery.getResourceType() != DocumentImpl.BINARY_FILE) {
-                throw new EXistException("Document " + pathToQuery + " is not a binary resource");
-            }
-
-            if (!xquery.getPermissions().validate(user, Permission.READ | Permission.EXECUTE)) {
-                throw new PermissionDeniedException("Insufficient privileges to access resource");
-            }
-
-            final Source source = new DBSource(broker.getBrokerPool(), xquery, true);
+        return withDb((broker, transaction) -> {
+            final Source source = resolveStoredXQuery(broker, transaction, pathToQuery);
 
             try {
                 final Map<String, Object> rpcResponse = this.<Map<String, Object>>compileQuery(broker, transaction, source, parameters)
@@ -2022,17 +2016,8 @@ public class RpcConnection implements RpcAPI {
 
         final Optional<String> sortBy = Optional.ofNullable(parameters.get(RpcAPI.SORT_EXPR)).map(Object::toString);
 
-        return this.<Map<String, Object>>readDocument(XmldbURI.createInternal(pathToQuery)).apply((document, broker, transaction) -> {
-            final BinaryDocument xquery = (BinaryDocument) document;
-            if (xquery.getResourceType() != DocumentImpl.BINARY_FILE) {
-                throw new EXistException("Document " + pathToQuery + " is not a binary resource");
-            }
-
-            if (!xquery.getPermissions().validate(user, Permission.READ | Permission.EXECUTE)) {
-                throw new PermissionDeniedException("Insufficient privileges to access resource");
-            }
-
-            final Source source = new DBSource(broker.getBrokerPool(), xquery, true);
+        return withDb((broker, transaction) -> {
+            final Source source = resolveStoredXQuery(broker, transaction, pathToQuery);
 
             try {
                 final Map<String, Object> rpcResponse = this.<Map<String, Object>>compileQuery(broker, transaction, source, parameters)
@@ -2041,6 +2026,36 @@ public class RpcConnection implements RpcAPI {
             } catch (final XPathException e) {
                 throw new EXistException(e);
             }
+        });
+    }
+
+    /**
+     * Resolves a stored XQuery to a {@link Source}, holding the document READ_LOCK only while
+     * the document is resolved and its permissions are checked. The lock is released on return,
+     * before the query is compiled and executed: holding the query document's lock while the
+     * executor goes on to acquire further collection/document locks is one edge of the
+     * save-while-running deadlock (#6593).
+     *
+     * @param broker the broker to use for the operation
+     * @param transaction the transaction to use for the operation
+     * @param pathToQuery the database path of the stored query
+     *
+     * @return the source of the stored query
+     *
+     * @throws EXistException if the document is missing or is not a binary resource
+     * @throws PermissionDeniedException if the current user may not execute the stored query
+     */
+    private Source resolveStoredXQuery(final DBBroker broker, final Txn transaction, final String pathToQuery) throws EXistException, PermissionDeniedException {
+        return this.<Source>readDocument(broker, transaction, XmldbURI.createInternal(pathToQuery)).apply((document, broker1, transaction1) -> {
+            if (document.getResourceType() != DocumentImpl.BINARY_FILE) {
+                throw new EXistException("Document " + pathToQuery + " is not a binary resource");
+            }
+
+            if (!document.getPermissions().validate(user, Permission.READ | Permission.EXECUTE)) {
+                throw new PermissionDeniedException("Insufficient privileges to access resource");
+            }
+
+            return new DBSource(broker1.getBrokerPool(), (BinaryDocument) document, true);
         });
     }
 
@@ -3099,7 +3114,7 @@ public class RpcConnection implements RpcAPI {
     @Override
     public byte[] getDocumentChunk(final String name, final int start, final int len)
             throws EXistException, PermissionDeniedException, IOException {
-        final Path file = Paths.get(System.getProperty("java.io.tmpdir")).resolve(name);
+        final Path file = Path.of(System.getProperty("java.io.tmpdir")).resolve(name);
         if (!Files.isReadable(file)) {
             throw new EXistException("unable to read file " + name);
         }
@@ -3198,15 +3213,25 @@ public class RpcConnection implements RpcAPI {
 
     @Override
     public boolean reindexCollection(final String collectionName) throws URISyntaxException, EXistException, PermissionDeniedException {
-    	reindexCollection(XmldbURI.xmldbUriFor(collectionName));
+        return reindexCollection(collectionName, "all");
+    }
+
+    @Override
+    public boolean reindexCollection(final String collectionName, final String mode) throws URISyntaxException, EXistException, PermissionDeniedException {
+        final org.exist.indexing.ReindexScope scope = org.exist.indexing.ReindexScope.fromString(mode);
+        reindexCollection(XmldbURI.xmldbUriFor(collectionName), scope);
         return true;
     }
 
     private void reindexCollection(final XmldbURI collUri) throws EXistException, PermissionDeniedException {
+        reindexCollection(collUri, org.exist.indexing.ReindexScope.ALL);
+    }
+
+    private void reindexCollection(final XmldbURI collUri, final org.exist.indexing.ReindexScope scope) throws EXistException, PermissionDeniedException {
         withDb((broker, transaction) -> {
-            broker.reindexCollection(transaction, collUri);
+            broker.reindexCollection(transaction, collUri, scope);
             if(LOG.isDebugEnabled()) {
-                LOG.debug("collection {} and sub-collections reindexed", collUri);
+                LOG.debug("collection {} and sub-collections reindexed (scope={})", collUri, scope);
             }
             return null;
         });
@@ -3214,11 +3239,17 @@ public class RpcConnection implements RpcAPI {
 
     @Override
     public boolean reindexDocument(final String docUri) throws EXistException, PermissionDeniedException {
+        return reindexDocument(docUri, "all");
+    }
+
+    @Override
+    public boolean reindexDocument(final String docUri, final String mode) throws EXistException, PermissionDeniedException {
+        final org.exist.indexing.ReindexScope scope = org.exist.indexing.ReindexScope.fromString(mode);
         withDb((broker, transaction) -> {
             try(final LockedDocument lockedDoc = broker.getXMLResource(XmldbURI.create(docUri), LockMode.READ_LOCK)) {
-                broker.reindexXMLResource(transaction, lockedDoc.getDocument(), DBBroker.IndexMode.STORE);
+                broker.reindexXMLResource(transaction, lockedDoc.getDocument(), DBBroker.IndexMode.REINDEX, scope);
                 if(LOG.isDebugEnabled()) {
-                    LOG.debug("document {} reindexed", docUri);
+                    LOG.debug("document {} reindexed (scope={})", docUri, scope);
                 }
                 return null;
             }
@@ -3233,7 +3264,7 @@ public class RpcConnection implements RpcAPI {
             final Backup backup = new Backup(
                     userbackup,
                     password,
-                    Paths.get(destcollection + "-backup"),
+                    Path.of(destcollection + "-backup"),
                     XmldbURI.xmldbUriFor(XmldbURI.EMBEDDED_SERVER_URI.toString() + collection));
             backup.backup(false, null);
 
@@ -3268,7 +3299,7 @@ public class RpcConnection implements RpcAPI {
             // TODO DWES reconsider
             try (final InputStream is = new EmbeddedInputStream(new XmldbURL(docUri))) {
                 // Perform validation
-                final ValidationReport report = validator.validate(is);
+                final ValidationReport report = validator.validate(is, null, docUri.toString());
 
                 // Return validation result
                 return report.isValid();
@@ -3401,7 +3432,7 @@ public class RpcConnection implements RpcAPI {
         }
 
         //Copy i file
-        int p, dsize = documents.length;
+        int p;
         for (Object document : documents) {
             final Map<String, Object> hash = (Map<String, Object>) document;
             String docName = (String) hash.get("name");

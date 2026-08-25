@@ -29,10 +29,10 @@ import java.net.URI;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.nio.file.StandardCopyOption;
 import java.util.Properties;
 
+import org.apache.commons.io.output.UnsynchronizedByteArrayOutputStream;
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
 
@@ -40,6 +40,7 @@ import org.exist.storage.serializers.EXistOutputKeys;
 import org.exist.util.FileUtils;
 import org.exist.util.MimeTable;
 import org.exist.util.MimeType;
+import org.exist.util.StringInputSource;
 import org.exist.util.io.TemporaryFileManager;
 import org.exist.util.serializer.SAXSerializer;
 import org.exist.xmldb.EXistResource;
@@ -163,13 +164,13 @@ public class XMLDBStore extends XMLDBAbstractCollectionManipulator {
         try {
             if (Type.subTypeOf(item.getType(), Type.JAVA_OBJECT)) {
                 final Object obj = ((JavaObjectValue) item).getObject();
-                if (obj instanceof java.io.File) {
-                    resourceId = loadFromFile(collection, ((java.io.File)obj).toPath(), docName, mimeType);
-                } else if(obj instanceof java.nio.file.Path) {
-                    resourceId = loadFromFile(collection, (Path)obj, docName, mimeType);
-                } else {
-                    LOGGER.error("Passed java object should be either a java.nio.file.Path or java.io.File");
-                    throw new XPathException(this, "Passed java object should be either a java.nio.file.Path or java.io.File");
+                switch (obj) {
+                    case java.io.File file -> resourceId = loadFromFile(collection, file.toPath(), docName, mimeType);
+                    case Path path -> resourceId = loadFromFile(collection, path, docName, mimeType);
+                    case null, default -> {
+                        LOGGER.error("Passed java object should be either a java.nio.file.Path or java.io.File");
+                        throw new XPathException(this, "Passed java object should be either a java.nio.file.Path or java.io.File");
+                    }
                 }
 
             } else if (Type.subTypeOf(item.getType(), Type.ANY_URI)) {
@@ -186,7 +187,40 @@ public class XMLDBStore extends XMLDBAbstractCollectionManipulator {
                     if (Type.subTypeOf(item.getType(), Type.STRING)) {
                         resource.setContent(item.getStringValue());
                     } else if (item.getType() == Type.BASE64_BINARY) {
-                        resource.setContent(((BinaryValue) item).toJavaObject());
+                        final BinaryValue binaryValue = (BinaryValue) item;
+                        if (mimeType.isXMLType()) {
+                            // The content is binary but the target mime type is an XML type: parse the
+                            // binary's bytes as an XML document. Setting the BinaryValue directly would
+                            // leave the (XML) resource with no character/byte stream, and the store would
+                            // later fail with an NPE when it tried to parse a null string as XML. Buffer
+                            // the bytes into a re-readable StringInputSource: the xmldb:store route parses
+                            // the source twice (validate, then store) and does not reset it between passes,
+                            // so a single-shot stream would be drained on the second pass. Buffering costs
+                            // nothing asymptotically here — storing XML parses the whole document into a
+                            // DOM anyway — and StringInputSource yields a fresh (unsynchronized) stream on
+                            // each read, letting the parser detect the encoding from the bytes.
+                            final byte[] xmlBytes;
+                            try (final UnsynchronizedByteArrayOutputStream baos = new UnsynchronizedByteArrayOutputStream()) {
+                                binaryValue.streamBinaryTo(baos);
+                                xmlBytes = baos.toByteArray();
+                            } catch (final IOException e) {
+                                throw new XPathException(this, "Unable to read binary content to store as XML: " + e.getMessage(), e);
+                            }
+                            resource.setContent(new StringInputSource(xmlBytes));
+                        } else {
+                            // Pass the BinaryValue through rather than .toJavaObject(), which reads the
+                            // whole value into a heap byte[] (a multi-GB upload would OOM). The local
+                            // resource keeps the BinaryValue and the store streams it via the
+                            // (disk-backed by default) binary cache instead of materializing it.
+                            //
+                            // The resource is only lent the value: closing the resource (on exit from
+                            // this try-with-resources) closes the value it was given, but the query
+                            // that produced the value may still need to read it afterwards. Take a
+                            // shared reference on the resource's behalf so its close() releases only
+                            // that reference.
+                            binaryValue.incrementSharedReferences();
+                            resource.setContent(binaryValue);
+                        }
                     } else if (Type.subTypeOf(item.getType(), Type.NODE)) {
                         if (mimeType.isXMLType()) {
                             final ContentHandler handler = ((XMLResource) resource).setContentAsSAX();
@@ -253,7 +287,7 @@ public class XMLDBStore extends XMLDBAbstractCollectionManipulator {
             if (path == null) {
                 throw new XPathException(this, "Cannot read from URI: " + uri.toASCIIString());
             }
-            final Path file = Paths.get(path);
+            final Path file = Path.of(path);
             if (!Files.isReadable(file)) {
                 throw new XPathException(this, "Cannot read path: " + path);
             }

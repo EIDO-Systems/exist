@@ -37,12 +37,44 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Optional;
 
-import static org.exist.util.IPUtil.nextFreePort;
 import static org.junit.Assert.fail;
 import static org.exist.repo.AutoDeploymentTrigger.AUTODEPLOY_PROPERTY;
 
 /**
- * Exist Jetty Web Server Rule for JUnit
+ * JUnit {@link org.junit.rules.ExternalResource} that starts an embedded eXist Jetty server for tests.
+ * <p>
+ * Prefer {@link org.junit.ClassRule} over {@link org.junit.Rule} when every test method in the class
+ * can share one server instance (for example {@code org.exist.http.urlrewrite.ControllerTest}).
+ * <p>
+ * <strong>Jetty layout ({@code jettyStandaloneMode})</strong>
+ * <ul>
+ *   <li>{@code true} (default): standalone deploy — single webapp at {@code /} via
+ *       {@code exist.jetty.standalone.webapp.dir}. The context must reach
+ *       {@link org.eclipse.jetty.server.handler.ContextHandler#isAvailable()} before HTTP clients
+ *       are used; {@link org.exist.jetty.JettyStart} blocks until it is ready.</li>
+ *   <li>{@code false}: distribution layout — {@code /exist} (main app) plus portal {@code /}.
+ *       {@code /exist} must be available; the portal may only need {@code isStarted()}.
+ *       Requires {@code exist.jetty.portal.dir} in Maven test configuration (see {@code exist-core/pom.xml}).</li>
+ * </ul>
+ * <p>
+ * <strong>Common system properties</strong> (usually set in module {@code pom.xml} Surefire config):
+ * <ul>
+ *   <li>{@code exist.jetty.standalone.webapp.dir} — exploded standalone test webapp root</li>
+ *   <li>{@code exist.jetty.portal.dir} — portal webapp for distribution-mode tests</li>
+ *   <li>{@code jetty.port}, {@code jetty.secure.port}, {@code jetty.ssl.port} — set to {@code 0} when
+ *       {@code useRandomPort} is {@code true}, causing the OS to assign ephemeral ports at bind time.
+ *       Call {@link #getPort()} after startup to obtain the actual bound port.</li>
+ *   <li>{@code jetty.home} — Jetty configuration directory ({@code exist-jetty-config/target/classes/...})</li>
+ * </ul>
+ * <p>
+ * <strong>Note on naming:</strong> {@code useRandomPort} (and the corresponding builder method) are named
+ * for historical compatibility. The underlying mechanism is OS ephemeral port allocation (port {@code 0}),
+ * not random selection from a range — which eliminates the TOCTOU bind-failure race that affected
+ * concurrent {@code forkCount &gt; 1} test runs.
+ * Startup failures throw {@link IllegalStateException} with detail from {@link org.exist.jetty.JettyStart}
+ * ({@code webAppStartupFailureDetail} is included in the exception message).
+ * <p>
+ * Prefer {@link #builder()} over the boolean constructor chain for readable test setup.
  */
 public class ExistWebServer extends ExternalResource {
 
@@ -55,10 +87,6 @@ public class ExistWebServer extends ExternalResource {
     private static final String PROP_JETTY_SECURE_PORT = "jetty.secure.port";
     private static final String PROP_JETTY_SSL_PORT = "jetty.ssl.port";
 
-    private static final int MIN_RANDOM_PORT = 49152;
-    private static final int MAX_RANDOM_PORT = 65535;
-    private static final int MAX_RANDOM_PORT_ATTEMPTS = 10;
-
     private JettyStart server = null;
     private String prevAutoDeploy = "off";
 
@@ -69,32 +97,100 @@ public class ExistWebServer extends ExternalResource {
     private Optional<Path> temporaryStorage = Optional.empty();
     private final boolean jettyStandaloneMode;
 
+    public static Builder builder() {
+        return new Builder();
+    }
+
+    public static final class Builder {
+        private boolean useRandomPort;
+        private boolean cleanupDbOnShutdown;
+        private boolean disableAutoDeploy;
+        private boolean useTemporaryStorage;
+        private boolean jettyStandaloneMode = true;
+
+        public Builder useRandomPort() {
+            return useRandomPort(true);
+        }
+
+        public Builder useRandomPort(final boolean useRandomPort) {
+            this.useRandomPort = useRandomPort;
+            return this;
+        }
+
+        public Builder cleanupDbOnShutdown() {
+            return cleanupDbOnShutdown(true);
+        }
+
+        public Builder cleanupDbOnShutdown(final boolean cleanupDbOnShutdown) {
+            this.cleanupDbOnShutdown = cleanupDbOnShutdown;
+            return this;
+        }
+
+        public Builder disableAutoDeploy() {
+            return disableAutoDeploy(true);
+        }
+
+        public Builder disableAutoDeploy(final boolean disableAutoDeploy) {
+            this.disableAutoDeploy = disableAutoDeploy;
+            return this;
+        }
+
+        public Builder useTemporaryStorage() {
+            return useTemporaryStorage(true);
+        }
+
+        public Builder useTemporaryStorage(final boolean useTemporaryStorage) {
+            this.useTemporaryStorage = useTemporaryStorage;
+            return this;
+        }
+
+        public Builder jettyStandaloneMode(final boolean jettyStandaloneMode) {
+            this.jettyStandaloneMode = jettyStandaloneMode;
+            return this;
+        }
+
+        public Builder distributionMode() {
+            return jettyStandaloneMode(false);
+        }
+
+        public ExistWebServer build() {
+            return new ExistWebServer(this);
+        }
+    }
+
+    private ExistWebServer(final Builder builder) {
+        this.useRandomPort = builder.useRandomPort;
+        this.cleanupDbOnShutdown = builder.cleanupDbOnShutdown;
+        this.disableAutoDeploy = builder.disableAutoDeploy;
+        this.useTemporaryStorage = builder.useTemporaryStorage;
+        this.jettyStandaloneMode = builder.jettyStandaloneMode;
+    }
+
     public ExistWebServer() {
-        this(false);
+        this(builder());
     }
 
     public ExistWebServer(final boolean useRandomPort) {
-        this(useRandomPort, false);
+        this(builder().useRandomPort(useRandomPort));
     }
 
     public ExistWebServer(final boolean useRandomPort, final boolean cleanupDbOnShutdown) {
-        this(useRandomPort, cleanupDbOnShutdown, false);
+        this(builder().useRandomPort(useRandomPort).cleanupDbOnShutdown(cleanupDbOnShutdown));
     }
 
     public ExistWebServer(final boolean useRandomPort, final boolean cleanupDbOnShutdown, final boolean disableAutoDeploy) {
-        this(useRandomPort, cleanupDbOnShutdown, disableAutoDeploy, false);
+        this(builder().useRandomPort(useRandomPort).cleanupDbOnShutdown(cleanupDbOnShutdown).disableAutoDeploy(disableAutoDeploy));
     }
 
     public ExistWebServer(final boolean useRandomPort, final boolean cleanupDbOnShutdown, final boolean disableAutoDeploy, final boolean useTemporaryStorage) {
-        this(useRandomPort, cleanupDbOnShutdown, disableAutoDeploy, useTemporaryStorage, true);
+        this(builder().useRandomPort(useRandomPort).cleanupDbOnShutdown(cleanupDbOnShutdown)
+                .disableAutoDeploy(disableAutoDeploy).useTemporaryStorage(useTemporaryStorage));
     }
 
     public ExistWebServer(final boolean useRandomPort, final boolean cleanupDbOnShutdown, final boolean disableAutoDeploy, final boolean useTemporaryStorage, final boolean jettyStandaloneMode) {
-        this.useRandomPort = useRandomPort;
-        this.cleanupDbOnShutdown = cleanupDbOnShutdown;
-        this.disableAutoDeploy = disableAutoDeploy;
-        this.useTemporaryStorage = useTemporaryStorage;
-        this.jettyStandaloneMode = jettyStandaloneMode;
+        this(builder().useRandomPort(useRandomPort).cleanupDbOnShutdown(cleanupDbOnShutdown)
+                .disableAutoDeploy(disableAutoDeploy).useTemporaryStorage(useTemporaryStorage)
+                .jettyStandaloneMode(jettyStandaloneMode));
     }
 
     public final int getPort() {
@@ -121,32 +217,28 @@ public class ExistWebServer extends ExternalResource {
                 LOG.info("Using temporary storage location: {}", absTemporaryStorage);
             }
 
-            if(useRandomPort) {
-                synchronized(ExistWebServer.class) {
-                    System.setProperty(PROP_JETTY_PORT, Integer.toString(nextFreePort(MIN_RANDOM_PORT, MAX_RANDOM_PORT, MAX_RANDOM_PORT_ATTEMPTS)));
-                    System.setProperty(PROP_JETTY_SECURE_PORT, Integer.toString(nextFreePort(MIN_RANDOM_PORT, MAX_RANDOM_PORT, MAX_RANDOM_PORT_ATTEMPTS)));
-                    System.setProperty(PROP_JETTY_SSL_PORT, Integer.toString(nextFreePort(MIN_RANDOM_PORT, MAX_RANDOM_PORT, MAX_RANDOM_PORT_ATTEMPTS)));
-
-                    server = new JettyStart();
-                    server.run(jettyStandaloneMode);
-                }
-            } else {
-                server = new JettyStart();
-                server.run();
-            }
+            startJettyServer();
         } else {
             throw new IllegalStateException("ExistWebServer already running");
         }
         super.before();
     }
 
+    /**
+     * Shuts down and restarts the embedded Jetty server.
+     * <p>
+     * When {@code useRandomPort} is {@code true}, the restarted server binds to a new OS-assigned
+     * ephemeral port. Callers that cached the value of {@link #getPort()} before the restart must
+     * re-read it afterwards.
+     */
     public void restart() {
         if(server != null) {
             try {
                 server.shutdown();
-                server.run();
-            } catch (final Throwable t) {
-                throw new RuntimeException(t);
+                server.run(jettyStandaloneMode);
+                awaitJettyReadyAfterRun();
+            } catch (final Exception e) {
+                throw new IllegalStateException("Failed to restart ExistWebServer", e);
             }
         } else {
             throw new IllegalStateException("ExistWebServer already stopped");
@@ -156,30 +248,8 @@ public class ExistWebServer extends ExternalResource {
     @Override
     protected void after() {
         if(server != null) {
-            if(cleanupDbOnShutdown) {
-                try {
-                    TestUtils.cleanupDB();
-                } catch (final EXistException | PermissionDeniedException | LockException | IOException | TriggerException e) {
-                    fail(e.getMessage());
-                }
-            }
-            server.shutdown();
-            server = null;
-
-            if(useTemporaryStorage && temporaryStorage.isPresent()) {
-                FileUtils.deleteQuietly(temporaryStorage.get());
-                temporaryStorage = Optional.empty();
-                System.clearProperty(CONFIG_PROP_JOURNAL_DIR);
-                System.clearProperty(CONFIG_PROP_FILES);
-            }
-
-            if(useRandomPort) {
-                synchronized (ExistWebServer.class) {
-                    System.clearProperty(PROP_JETTY_SSL_PORT);
-                    System.clearProperty(PROP_JETTY_SECURE_PORT);
-                    System.clearProperty(PROP_JETTY_PORT);
-                }
-            }
+            shutdownJettyServer();
+            disposeTemporaryStorage();
         } else {
             throw new IllegalStateException("ExistWebServer already stopped");
         }
@@ -190,5 +260,53 @@ public class ExistWebServer extends ExternalResource {
         }
 
         super.after();
+    }
+
+    private void startJettyServer() {
+        if (useRandomPort) {
+            System.setProperty(PROP_JETTY_PORT, "0");
+            System.setProperty(PROP_JETTY_SECURE_PORT, "0");
+            System.setProperty(PROP_JETTY_SSL_PORT, "0");
+        }
+        server = new JettyStart();
+        server.run(jettyStandaloneMode);
+        awaitJettyReadyAfterRun();
+    }
+
+    private void awaitJettyReadyAfterRun() {
+        if (!server.isWebAppStartedSuccessfully()) {
+            final String detail = server.getWebAppStartupFailureDetail()
+                    .filter(s -> !s.isBlank())
+                    .orElse("no startup detail recorded");
+            throw new IllegalStateException(
+                    "Jetty web application context did not start successfully: " + detail);
+        }
+    }
+
+    private void shutdownJettyServer() {
+        if (cleanupDbOnShutdown) {
+            try {
+                TestUtils.cleanupDB();
+            } catch (final EXistException | PermissionDeniedException | LockException | IOException | TriggerException e) {
+                fail(e.getMessage());
+            }
+        }
+        server.shutdown();
+        server = null;
+
+        if(useRandomPort) {
+            System.clearProperty(PROP_JETTY_SSL_PORT);
+            System.clearProperty(PROP_JETTY_SECURE_PORT);
+            System.clearProperty(PROP_JETTY_PORT);
+        }
+    }
+
+    private void disposeTemporaryStorage() {
+        if (useTemporaryStorage && temporaryStorage.isPresent()) {
+            FileUtils.deleteQuietly(temporaryStorage.get());
+            temporaryStorage = Optional.empty();
+            System.clearProperty(CONFIG_PROP_JOURNAL_DIR);
+            System.clearProperty(CONFIG_PROP_FILES);
+        }
     }
 }

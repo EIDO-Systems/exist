@@ -138,7 +138,13 @@ public class Transform {
 
                 final Xslt30Transformer xslt30Transformer = xsltExecutable.load30();
 
-                options.initialMode.ifPresent(qNameValue -> xslt30Transformer.setInitialMode(Convert.ToSaxon.of(qNameValue.getQName())));
+                if (options.initialMode.isPresent()) {
+                    try {
+                        xslt30Transformer.setInitialMode(Convert.ToSaxon.of(options.initialMode.get().getQName()));
+                    } catch (final SaxonApiException e) {
+                        throw new XPathException(fnTransform, ErrorCodes.FOXT0003, "Unable to set initial mode: " + e.getMessage(), e);
+                    }
+                }
                 xslt30Transformer.setInitialTemplateParameters(options.templateParams, false);
                 xslt30Transformer.setInitialTemplateParameters(options.tunnelParams, true);
                 if (options.baseOutputURI.isPresent()) {
@@ -161,7 +167,7 @@ public class Transform {
                 xslt30Transformer.setResultDocumentHandler(resultDocumentURI -> {
                     final Delivery resultDelivery = new Delivery(context, options.deliveryFormat, serializationProperties);
                     resultDocuments.put(resultDocumentURI, resultDelivery);
-                    return resultDelivery.createDestination(xslt30Transformer, true);
+                    return resultDelivery.createDestination(xslt30Transformer);
                 });
 
                 if (options.globalContextItem.isPresent()) {
@@ -189,8 +195,10 @@ public class Transform {
                 final Transform.TemplateInvocation invocation = new Transform.TemplateInvocation(
                         options, sourceNode, delivery, xslt30Transformer, resultDocuments);
                 return invocation.invoke();
-            } catch (final SaxonApiException | UncheckedXPathException e) {
-                throw originalXPathException("Could not transform input: ", e, ErrorCodes.FOXT0003);
+            } catch (final SaxonApiException e) {
+              throw originalXPathException("Could not transform with "+options.xsltSource._1+" line "+e.getLineNumber()+": ", e, ErrorCodes.FOXT0003);
+            } catch (final UncheckedXPathException e) {
+              throw originalXPathException("Could not transform with "+options.xsltSource._1+" line "+e.getXPathException().getLocationAsString()+": ", e, ErrorCodes.FOXT0003);
             }
 
         } else {
@@ -214,23 +222,42 @@ public class Transform {
             xsltCompiler.setParameter(new net.sf.saxon.s9api.QName(qKey.getPrefix(), qKey.getLocalPart()), value);
         }
 
-        xsltCompiler.setURIResolver(new URIResolution.CompileTimeURIResolver(context, fnTransform) {
-            @Override  public Source resolve(final String href, final String base) throws TransformerException {
-                // Correct error from URI resolution when there is no base
-                try {
-                    final URI hrefURI = URI.create(href);
-                    if (options.resolvedStylesheetBaseURI.isEmpty() && !hrefURI.isAbsolute() && StringUtils.isEmpty(base)) {
-                        final XPathException resolutionException = new XPathException(fnTransform,
-                            ErrorCodes.XTSE0165,
-                            "transform using a relative href, \n" +
-                                "using option stylesheet-text, but without stylesheet-base-uri");
-                        throw new TransformerException(resolutionException);
-                    }
-                } catch (final IllegalArgumentException e) {
-                    throw new TransformerException(e);
+        // setResourceResolver() rather than setURIResolver() -- Saxon 12's XsltCompiler still
+        // accepts setURIResolver() (it wraps via ResourceResolverWrappingURIResolver), but going
+        // directly to the ResourceResolver API avoids that extra layer. See #350.
+        final URIResolution.CompileTimeURIResolver delegate = new URIResolution.CompileTimeURIResolver(context, fnTransform);
+        xsltCompiler.setResourceResolver(request -> {
+            // Prefer the literal, unresolved href (relativeUri) over Saxon's already-resolved uri
+            // whenever it's available -- matches Saxon's own ResourceRequest.resolve() convention.
+            // Deliberately NOT gated on baseUri also being non-null: a relative relativeUri with a
+            // null baseUri is exactly the case the XTSE0165 check below exists to catch: gating on
+            // baseUri here would fall back to the already-resolved/absolute uri instead and let
+            // that case slip past the check undetected.
+            final String href = request.relativeUri != null ? request.relativeUri : request.uri;
+            final String base = request.baseUri;
+            if (href == null) {
+                // Saxon supplied neither a literal href nor a resolved uri -- nothing to resolve.
+                throw net.sf.saxon.trans.XPathException.makeXPathException(
+                        new TransformerException("Could not resolve a Saxon ResourceRequest with no href (uri and relativeUri both null)"));
+            }
+            try {
+                final URI hrefURI = URI.create(href);
+                if (options.resolvedStylesheetBaseURI.isEmpty() && !hrefURI.isAbsolute() && StringUtils.isEmpty(base)) {
+                    final XPathException resolutionException = new XPathException(fnTransform,
+                        ErrorCodes.XTSE0165,
+                        """
+                        transform using a relative href,\s
+                        using option stylesheet-text, but without stylesheet-base-uri""");
+                    throw net.sf.saxon.trans.XPathException.makeXPathException(new TransformerException(resolutionException));
                 }
-                // Checked the special error case, defer to eXist resolution
-                return super.resolve(href, base);
+            } catch (final IllegalArgumentException e) {
+                throw net.sf.saxon.trans.XPathException.makeXPathException(new TransformerException(e));
+            }
+            // Checked the special error case, defer to eXist resolution
+            try {
+                return delegate.resolve(href, base);
+            } catch (final TransformerException e) {
+                throw net.sf.saxon.trans.XPathException.makeXPathException(e);
             }
         });
 
@@ -255,8 +282,8 @@ public class Transform {
     private XPathException originalXPathException(final String prefix, @Nonnull final Throwable e, final ErrorCodes.ErrorCode defaultErrorCode) {
         Throwable cause = e;
         while (cause != null) {
-            if (cause instanceof XPathException) {
-                return new XPathException(fnTransform, ((XPathException) cause).getErrorCode(), prefix + cause.getMessage());
+            if (cause instanceof XPathException exception) {
+                return new XPathException(fnTransform, exception.getErrorCode(), prefix + cause.getMessage());
             }
             cause = cause.getCause();
         }
@@ -321,7 +348,7 @@ public class Transform {
             this.options = options;
             this.sourceNode = sourceNode;
             this.delivery = delivery;
-            this.destination = delivery.createDestination(xslt30Transformer, false);
+            this.destination = delivery.createDestination(xslt30Transformer);
             this.xslt30Transformer = xslt30Transformer;
             this.resultDocuments = resultDocuments;
         }
@@ -362,8 +389,8 @@ public class Transform {
             if (options.initialMatchSelection.isPresent()) {
                 final Sequence initialMatchSelection = options.initialMatchSelection.get();
                 final Item item = initialMatchSelection.itemAt(0);
-                if (item instanceof Document) {
-                    final Source sourceIMS = new DOMSource((Document)item, context.getBaseURI().getStringValue());
+                if (item instanceof Document document) {
+                    final Source sourceIMS = new DOMSource(document, context.getBaseURI().getStringValue());
                     xslt30Transformer.applyTemplates(sourceIMS, destination);
                 } else {
                     final XdmValue selection = toSaxon.of(initialMatchSelection);
@@ -423,7 +450,10 @@ public class Transform {
     }
 
     private static Optional<Source> getSourceNode(final Optional<NodeValue> sourceNode, final AnyURIValue baseURI) {
-        return sourceNode.map(NodeValue::getNode).map(node -> new DOMSource(node, baseURI.getStringValue()));
+        // Saxon 12 rejects duplicate document-URIs in the document pool.
+        // Don't set a system ID on the source DOMSource to avoid collisions
+        // with the stylesheet or other documents sharing the same base URI.
+        return sourceNode.map(NodeValue::getNode).map(node -> new DOMSource(node));
     }
 
     private static class ErrorListenerLog4jAdapter implements ErrorListener {

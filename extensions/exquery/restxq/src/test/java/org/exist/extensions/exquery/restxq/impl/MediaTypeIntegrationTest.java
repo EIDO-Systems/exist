@@ -26,72 +26,70 @@
  */
 package org.exist.extensions.exquery.restxq.impl;
 
-import org.apache.http.HttpEntity;
-import org.apache.http.HttpResponse;
-import org.apache.http.HttpStatus;
-import org.apache.http.client.fluent.Request;
-import org.apache.http.entity.ContentType;
-import org.apache.http.message.BasicHeader;
 import org.junit.BeforeClass;
 import org.junit.Test;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 
+import static java.net.HttpURLConnection.HTTP_OK;
 import static org.junit.Assert.assertEquals;
-import static java.nio.charset.StandardCharsets.UTF_8;
 
 public class MediaTypeIntegrationTest extends AbstractClassIntegrationTest {
 
     private static String TEST_COLLECTION = "/db/restxq/media-type-integration-test";
 
     private static String XQUERY1 =
-            "xquery version \"3.0\";\n" +
-            "\n" +
-            "module namespace mod1 = \"http://mod1\";\n" +
-            "\n" +
-            "declare namespace rest = \"http://exquery.org/ns/restxq\";\n" +
-            "declare namespace output = \"http://www.w3.org/2010/xslt-xquery-serialization\";\n" +
-            "\n" +
-            "declare %private variable $mod1:data := document { <person><firstName>Adam</firstName><lastName>Retter</lastName></person> } ;\n" +
-            "\n" +
-            "declare\n" +
-            "    %rest:GET\n" +
-            "    %rest:path(\"/media-type-json1\")\n" +
-            "    %output:media-type(\"application/json\")\n" +
-            "    %output:method(\"json\")\n" +
-            "function mod1:media-type-json1() {\n" +
-            "    $mod1:data\n" +
-            "};\n" +
-            "\n" +
-            "declare\n" +
-            "    %rest:GET\n" +
-            "    %rest:path(\"/media-type-json2\")\n" +
-            "    %output:media-type(\"application/json\")\n" +
-            "    %output:method(\"json\")\n" +
-            "function mod1:media-type-json2() {\n" +
-            "    $mod1:data/person\n" +
-            "};\n" +
-            "\n" +
-            "declare\n" +
-            "    %rest:GET\n" +
-            "    %rest:path(\"/media-type-xml1\")\n" +
-            "    %output:media-type(\"application/xml\")\n" +
-            "    %output:method(\"xml\")\n" +
-            "    %output:indent(\"no\")\n" +
-            "function mod1:media-type-xml1() {\n" +
-            "    $mod1:data\n" +
-            "};\n" +
-            "\n" +
-            "declare\n" +
-            "    %rest:GET\n" +
-            "    %rest:path(\"/media-type-xml2\")\n" +
-            "    %output:media-type(\"application/xml\")\n" +
-            "    %output:method(\"xml\")\n" +
-            "    %output:indent(\"no\")\n" +
-            "function mod1:media-type-xml2() {\n" +
-            "    $mod1:data/person\n" +
-            "};\n";
+            """
+            xquery version "3.0";
+            
+            module namespace mod1 = "http://mod1";
+            
+            declare namespace rest = "http://exquery.org/ns/restxq";
+            declare namespace output = "http://www.w3.org/2010/xslt-xquery-serialization";
+            
+            declare %private variable $mod1:data := document { <person><firstName>Adam</firstName><lastName>Retter</lastName></person> } ;
+            
+            declare
+                %rest:GET
+                %rest:path("/media-type-json1")
+                %output:media-type("application/json")
+                %output:method("json")
+            function mod1:media-type-json1() {
+                $mod1:data
+            };
+            
+            declare
+                %rest:GET
+                %rest:path("/media-type-json2")
+                %output:media-type("application/json")
+                %output:method("json")
+            function mod1:media-type-json2() {
+                $mod1:data/person
+            };
+            
+            declare
+                %rest:GET
+                %rest:path("/media-type-xml1")
+                %output:media-type("application/xml")
+                %output:method("xml")
+                %output:indent("no")
+            function mod1:media-type-xml1() {
+                $mod1:data
+            };
+            
+            declare
+                %rest:GET
+                %rest:path("/media-type-xml2")
+                %output:media-type("application/xml")
+                %output:method("xml")
+                %output:indent("no")
+            function mod1:media-type-xml2() {
+                $mod1:data/person
+            };
+            """;
     private static String XQUERY1_FILENAME = "restxq-tests1.xqm";
 
     @BeforeClass
@@ -103,47 +101,62 @@ public class MediaTypeIntegrationTest extends AbstractClassIntegrationTest {
 
     @Test
     public void mediaTypeJson1() throws IOException {
-        assertMediaTypeResponse("/media-type-json1", ContentType.APPLICATION_JSON,
-                "application/json; charset=utf-8",
+        assertMediaTypeResponse("/media-type-json1", "application/json",
+                "application/json;charset=utf-8",
                 "{ \"firstName\" : \"Adam\", \"lastName\" : \"Retter\" }");
     }
 
     @Test
     public void mediaTypeJson2() throws IOException {
-        assertMediaTypeResponse("/media-type-json2", ContentType.APPLICATION_JSON,
-                "application/json; charset=utf-8",
+        assertMediaTypeResponse("/media-type-json2", "application/json",
+                "application/json;charset=utf-8",
                 "{ \"firstName\" : \"Adam\", \"lastName\" : \"Retter\" }");
     }
 
     @Test
     public void mediaTypeXml1() throws IOException {
-        assertMediaTypeResponse("/media-type-xml1", ContentType.APPLICATION_XML.withCharset(UTF_8),
-                ContentType.APPLICATION_XML.withCharset(UTF_8).toString(),
+        assertMediaTypeResponse("/media-type-xml1", "application/xml; charset=utf-8",
+                "application/xml; charset=UTF-8",
                 "<person><firstName>Adam</firstName><lastName>Retter</lastName></person>");
     }
 
     @Test
     public void mediaTypeXml2() throws IOException {
-        assertMediaTypeResponse("/media-type-xml2", ContentType.APPLICATION_XML.withCharset(UTF_8),
-                ContentType.APPLICATION_XML.withCharset(UTF_8).toString(),
+        assertMediaTypeResponse("/media-type-xml2", "application/xml; charset=utf-8",
+                "application/xml; charset=UTF-8",
                 "<person><firstName>Adam</firstName><lastName>Retter</lastName></person>");
     }
 
-    private void assertMediaTypeResponse(final String uriEndpoint, final ContentType acceptContentType, final String expectedResponseContentType, final String expectedResponseBody) throws IOException {
-        final HttpResponse response = executor.execute(Request
-                .Get(getRestXqUri() + uriEndpoint)
-                .addHeader(new BasicHeader("Accept", acceptContentType.toString()))
-        ).returnResponse();
+    private void assertMediaTypeResponse(final String uriEndpoint, final String acceptContentType, final String expectedResponseContentType, final String expectedResponseBody) throws IOException {
+        final HttpRequest request = authenticatedAdminRequest(getRestXqUri() + uriEndpoint)
+                .header("Accept", acceptContentType)
+                .GET()
+                .build();
 
-        assertEquals(HttpStatus.SC_OK, response.getStatusLine().getStatusCode());
+        final HttpResponse<InputStream> response = send(request);
 
-        final HttpEntity responseEntity = response.getEntity();
-        assertEquals(expectedResponseContentType, responseEntity.getContentType().getValue());
+        assertEquals(HTTP_OK, response.statusCode());
+
+        assertEquals(expectedResponseContentType, response.headers().firstValue("Content-Type").orElse(null));
 
         final String responseBody;
-        try (final InputStream is = responseEntity.getContent()) {
+        try (final InputStream is = response.body()) {
             responseBody = asString(is);
         }
         assertEquals(expectedResponseBody, responseBody);
+    }
+
+    /**
+     * Send a request reading the body as an {@link InputStream}, translating the checked
+     * {@link InterruptedException} thrown by {@link java.net.http.HttpClient#send} into an
+     * {@link IOException}.
+     */
+    private HttpResponse<InputStream> send(final HttpRequest request) throws IOException {
+        try {
+            return httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+        } catch (final InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while awaiting HTTP response", e);
+        }
     }
 }

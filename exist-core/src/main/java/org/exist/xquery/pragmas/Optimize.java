@@ -90,7 +90,8 @@ public class Optimize extends AbstractPragma {
         boolean optimize = false;
         NodeSet originalContext = null;
 
-        if (contextSequence == null || contextSequence.isPersistentSet()) {    // don't try to optimize in-memory node sets!
+        // don't try to optimize in-memory node sets!
+        if (contextSequence == null || contextSequence.isPersistentSet()) {
             // contextSequence will be overwritten
             originalContext = contextSequence == null ? null : contextSequence.toNodeSet();
             if (cachedContext != null && cachedContext == originalContext) {
@@ -103,26 +104,24 @@ public class Optimize extends AbstractPragma {
             // in the current context
             if (useCached) {
                 optimize = cachedOptimize;
-            } else {
-                if (optimizables != null) {
-                    for (final Optimizable optimizable : optimizables) {
-                        final Sequence canBeOptimized = optimizable.canOptimizeSequence(contextSequence);
-                        if (canBeOptimized == null) {
-                            optimize = false;
-                            break;  // exit for-each loop
-                        }
-                        if (canBeOptimized.getItemCount() == contextSequence.getItemCount()) {
-                            // everything in sequence can be optimized
-                            optimize = true;  // so far so good, head to next for-loop of `optimizable`
-                        } else {
-                            // nothing or only some bits can be optimized
-                            optimize = false;
-                            break;  // exit for-each loop
-                        }
+            } else if (optimizables != null && contextSequence != null) {
+                for (final Optimizable optimizable : optimizables) {
+                    final Sequence canBeOptimized = optimizable.canOptimizeSequence(contextSequence);
+                    if (
+                            canBeOptimized == null ||
+                            canBeOptimized.getItemCount() != contextSequence.getItemCount()
+                    ) {
+                        optimize = false;
+                        break;  // exit for-each loop
                     }
+                    // so far so good,
+                    // everything in sequence can be optimized
+                    optimize = true;
+                    // head to next for-loop of `optimizable`
                 }
             }
         }
+
         if (optimize) {
             cachedContext = originalContext;
             cachedTimestamp = originalContext == null ? 0 : originalContext.getState();
@@ -224,8 +223,8 @@ public class Optimize extends AbstractPragma {
             @Override
             public void visitFilteredExpr(final FilteredExpression filtered) {
                 final Expression filteredExpr = filtered.getExpression();
-                if (filteredExpr instanceof VariableReference) {
-                    contextVar = (VariableReference) filteredExpr;
+                if (filteredExpr instanceof VariableReference reference) {
+                    contextVar = reference;
                 }
 
                 final List<Predicate> predicates = filtered.getPredicates();
@@ -254,11 +253,11 @@ public class Optimize extends AbstractPragma {
 
             @Override
             public void visitBuiltinFunction(final Function function) {
-                if (function instanceof Optimizable) {
+                if (function instanceof Optimizable optimizable) {
                     if (LOG.isTraceEnabled()) {
                         LOG.trace("exist:optimize: found optimizable function: {}", function.getClass().getName());
                     }
-                    addOptimizable((Optimizable) function);
+                    addOptimizable(optimizable);
                 }
             }
         });

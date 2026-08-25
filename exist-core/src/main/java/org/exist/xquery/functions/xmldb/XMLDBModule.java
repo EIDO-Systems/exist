@@ -21,7 +21,6 @@
  */
 package org.exist.xquery.functions.xmldb;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -93,7 +92,8 @@ public class XMLDBModule extends AbstractInternalModule {
             new FunctionDef(FunXCollection.FS_XCOLLECTION[0], FunXCollection.class),
             new FunctionDef(FunXCollection.FS_XCOLLECTION[1], FunXCollection.class),
             new FunctionDef(XMLDBReindex.FNS_REINDEX_COLLECTION, XMLDBReindex.class),
-            new FunctionDef(XMLDBReindex.FNS_REINDEX_DOCUMENT, XMLDBReindex.class),
+            new FunctionDef(XMLDBReindex.FNS_REINDEX_2ARGS, XMLDBReindex.class),
+            new FunctionDef(XMLDBReindex.FNS_REINDEX_DOCUMENT_MODE, XMLDBReindex.class),
             new FunctionDef(XMLDBDefragment.signatures[0], XMLDBDefragment.class),
             new FunctionDef(XMLDBDefragment.signatures[1], XMLDBDefragment.class),
             new FunctionDef(FindLastModified.signatures[0], FindLastModified.class),
@@ -109,13 +109,8 @@ public class XMLDBModule extends AbstractInternalModule {
     };
 
     private boolean allowAnyUri = false;
-
-    static {
-        Arrays.sort(functions, new FunctionComparator());
-    }
-
     public XMLDBModule(final Map<String, List<?>> parameters) {
-        super(functions, parameters, true);
+        super(functions, parameters);
 
         final List<String> allowAnyUriParameterList = (List<String>) getParameter("allowAnyUri");
         if (allowAnyUriParameterList != null && !allowAnyUriParameterList.isEmpty()) {

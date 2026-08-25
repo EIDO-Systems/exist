@@ -19,7 +19,7 @@
  : License along with this library; if not, write to the Free Software
  : Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
  :)
-xquery version "3.0";
+xquery version "3.1";
 
 (:~
  : XQSuite - a functional test framework based on XQuery 3.0 annotations.
@@ -58,6 +58,8 @@ declare variable $test:UNKNOWN_ASSERTION := QName($test:TEST_NAMESPACE, "no-such
 declare variable $test:WRONG_ARG_COUNT := QName($test:TEST_NAMESPACE, "wrong-number-of-arguments");
 declare variable $test:TYPE_ERROR := QName($test:TEST_NAMESPACE, "type-error");
 declare variable $test:UNKNOWN_ANNOTATION_VALUE_TYPE := QName($test:TEST_NAMESPACE, "unknown-annotation-value-type");
+declare variable $test:FAILURE := QName($test:TEST_NAMESPACE, "failure");
+declare variable $test:CUSTOM_ASSERTION_FAILURE_TYPE := "custom-assertion-failure";
 
 (:~
  : Main entry point into the module. Takes a sequence of function items.
@@ -86,14 +88,22 @@ declare function test:suite($functions as function(*)+) {
  :
  : @return an XML report (in xUnit format)
  :)
-declare function test:suite($functions as function(*)+,
+declare function test:suite(
+        $functions as function(*)+,
         $test-ignored-function as (function(xs:string) as empty-sequence())?,
         $test-started-function as (function(xs:string) as empty-sequence())?,
         $test-failure-function as (function(xs:string, map(xs:string, item()?), map(xs:string, item()?)) as empty-sequence())?,
         $test-assumption-failed-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?,
         $test-error-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?,
-        $test-finished-function as (function(xs:string) as empty-sequence())?) {
+        $test-finished-function as (function(xs:string) as empty-sequence())?
+) {
     let $modules := test:distinct-modules($functions)
+    let $runner :=
+        test:run-tests(
+            ?, ?,
+            $test-ignored-function, $test-started-function, $test-failure-function,
+            $test-assumption-failed-function, $test-error-function, $test-finished-function
+        )
     return
         <testsuites>
         {
@@ -103,31 +113,69 @@ declare function test:suite($functions as function(*)+,
                     namespace-uri-from-QName(function-name($func)) = $module
                 })
             let $setup := test:call-func-with-annotation($modFunctions, "setUp", $test-error-function)
-            let $result :=
-                if (empty($setup) or $setup/self::ok) then
-                    let $startTime := util:system-time()
-                    let $results :=
-                        test:function-by-annotation($modFunctions, "assert", test:run-tests(?, ?, $test-ignored-function, $test-started-function, $test-failure-function, $test-assumption-failed-function, $test-error-function, $test-finished-function))
-                    let $elapsed :=
-                        util:system-time() - $startTime
-                    return
-                        <testsuite package="{$module}" timestamp="{util:system-dateTime()}"
-                            tests="{count($results)}"
-                            failures="{count($results/failure)}"
-                            errors="{count($results/error)}"
-                            pending="{count($results/pending)}"
-                            time="{$elapsed}">
-                            { $results }
-                        </testsuite>
+            let $setupOk := empty($setup) or exists($setup/self::ok)
+            let $startTime := util:system-time()
+            let $results :=
+                if ($setupOk) then
+                    test:function-by-annotation($modFunctions, "assert", $runner)
+                else ()
+            let $elapsed := util:system-time() - $startTime
+            (:
+             : tearDown always runs, regardless of whether setUp or any test
+             : threw. Prior to https://github.com/eXist-db/exist/issues/6422
+             : a tearDown error was caught in test:call-func-with-annotation
+             : and the resulting <system-err/> was then discarded by the
+             : outer ($result, $tearDown)[1] selector, leaving the bug
+             : invisible to any consumer of the suite XML (CI, IDE, reports).
+             : Surface it as a <system-err> child on the <testsuite>, and
+             : count it as one additional error.
+             :)
+            let $tearDown := test:call-func-with-annotation($modFunctions, "tearDown", $test-error-function)
+            let $tearDownErr := $tearDown/self::system-err
+            return
+                if ($setupOk) then
+                    <testsuite package="{$module}" timestamp="{util:system-dateTime()}"
+                        tests="{count($results)}"
+                        failures="{count($results/failure)}"
+                        errors="{count($results/error) + count($tearDownErr)}"
+                        pending="{count($results/pending)}"
+                        time="{$elapsed}">
+                        { $results }
+                        {
+                            if ($tearDownErr) then
+                                <system-err>{ "tearDown error: " || $tearDownErr/string() }</system-err>
+                            else ()
+                        }
+                    </testsuite>
                 else
                     <testsuite package="{$module}" timestamp="{util:system-dateTime()}"
-                        errors="{count($functions)}">
-                        {$setup/string()}
+                        errors="{count($functions) + count($tearDownErr)}">
+                        {
+                            if ($tearDownErr) then
+                                $setup/string() || "&#10;tearDown error: " || $tearDownErr/string()
+                            else
+                                $setup/string()
+                        }
                     </testsuite>
-            return
-                ($result, test:call-func-with-annotation($modFunctions, "tearDown", $test-error-function))[1]
         }
         </testsuites>
+};
+
+declare function test:fail ($message as xs:string, $expected as item()*, $actual as item()*) as empty-sequence() {
+    test:fail($message, $expected, $actual, $test:CUSTOM_ASSERTION_FAILURE_TYPE)
+};
+
+declare function test:fail (
+    $message as xs:string,
+    $expected as item()*,
+    $actual as item()*,
+    $type as xs:string
+) as empty-sequence() {
+    error($test:FAILURE, $message, map {
+        "expected": $expected,
+        "actual": $actual,
+        "type": $type
+    })
 };
 
 (:~
@@ -158,25 +206,29 @@ declare %private function test:distinct-modules($functions as function(*)+) as x
  : return <ok/> upon success, an error description otherwise.
  : Used for setUp and tearDown.
  :)
-declare %private function test:call-func-with-annotation($functions as function(*)+, $annot as xs:string,
-        $test-error-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?) as element()? {
+declare %private function test:call-func-with-annotation(
+        $functions as function(*)+,
+        $annot as xs:string,
+        $test-error-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?
+) as element()? {
     test:function-by-annotation($functions, $annot, function($func, $meta) {
         try {
             (<ok/>, $func())[1]
         } catch * {
-            if(not(empty($test-error-function))) then
-                $test-error-function($annot,
-                        map {
-                            "code": $err:code,
-                            "description": $err:description,
-                            "value": $err:value,
-                            "module": $err:module,
-                            "line-number": $err:line-number,
-                            "column-number": $err:column-number,
-                            "additional": $err:additional,
-                            "xquery-stack-trace": $exerr:xquery-stack-trace,
-                            "java-stack-trace": $exerr:java-stack-trace
-                        }
+            if (not(empty($test-error-function))) then
+                $test-error-function(
+                    $annot,
+                    map {
+                        "code": $err:code,
+                        "description": $err:description,
+                        "value": $err:value,
+                        "module": $err:module,
+                        "line-number": $err:line-number,
+                        "column-number": $err:column-number,
+                        "additional": $err:additional,
+                        "xquery-stack-trace": $exerr:xquery-stack-trace,
+                        "java-stack-trace": $exerr:java-stack-trace
+                    }
                 )
             else ()
             ,
@@ -190,43 +242,62 @@ declare %private function test:call-func-with-annotation($functions as function(
  : %args() annotations found. Each %arg annotation triggers one test run
  : using the supplied parameters.
  :)
-declare %private function test:run-tests($func as function(*), $meta as element(function),
+declare %private function test:run-tests(
+        $func as function(*),
+        $meta as element(function),
         $test-ignored-function as (function(xs:string) as empty-sequence())?,
         $test-started-function as (function(xs:string) as empty-sequence())?,
         $test-failure-function as (function(xs:string, map(xs:string, item()?), map(xs:string, item()?)) as empty-sequence())?,
         $test-assumption-failed-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?,
         $test-error-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?,
-        $test-finished-function as (function(xs:string) as empty-sequence())?) {
-    if($meta/annotation[ends-with(@name,  ":pending")])then
-      (
-          if(not(empty($test-ignored-function))) then $test-ignored-function(test:get-test-name($meta)) else (),
-          test:print-result($meta, (), <report>{
-            element pending {
-              $meta/annotation[ends-with(@name,  ":pending")]/value ! text()
-            }
-          }</report>)
-      )
+        $test-finished-function as (function(xs:string) as empty-sequence())?
+) {
+    if ($meta/annotation[ends-with(@name,  ":pending")]) then
+        (
+            if (not(empty($test-ignored-function))) then
+                $test-ignored-function(test:get-test-name($meta))
+            else ()
+            ,
+            test:print-result(
+                $meta,
+                (),
+                <report>{
+                    element pending {
+                        $meta/annotation[ends-with(@name,  ":pending")]/value ! text()
+                    }
+                }</report>
+            )
+        )
     else
         let $failed-assumptions := test:test-assumptions($meta, $test-assumption-failed-function)
         return
-            if(not(empty($failed-assumptions)))then
-                test:print-result($meta, (), <report>{
-                element assumptions {
-                  for $failed-assumption in $failed-assumptions
-                  return
-                      element assumption {
-                        attribute name { replace($failed-assumption/@name, "[^:]+:(.+)", "$1") },
-                        $failed-assumption/value/text()
-                      }
-                }
-              }</report>)
+            if (not(empty($failed-assumptions))) then
+                test:print-result(
+                    $meta,
+                    (),
+                    <report>{
+                        element assumptions {
+                            for $failed-assumption in $failed-assumptions
+                            return
+                                element assumption {
+                                    attribute name { replace($failed-assumption/@name, "[^:]+:(.+)", "$1") },
+                                    $failed-assumption/value/text()
+                                }
+                        }
+                    }</report>
+                )
             else
-              let $argsAnnot := $meta/annotation[matches(@name, ":args?")][not(preceding-sibling::annotation[1][matches(@name, ":args?")])]
-              return
-                  if ($argsAnnot) then
-                      $argsAnnot ! test:test($func, $meta, ., $test-started-function, $test-failure-function, $test-error-function, $test-finished-function)
-                  else
-                      test:test($func, $meta, (), $test-started-function, $test-failure-function, $test-error-function, $test-finished-function)
+                let $argsAnnot :=
+                    $meta/annotation[matches(@name, ":args?")]
+                        [not(preceding-sibling::annotation[1][matches(@name, ":args?")])]
+
+                let $test := test:test($func, $meta, ?,
+                        $test-started-function, $test-failure-function, $test-error-function, $test-finished-function)
+                return
+                    if ($argsAnnot) then
+                        $argsAnnot ! $test(.)
+                    else
+                        $test(())
 };
 
 (:~
@@ -235,23 +306,26 @@ declare %private function test:run-tests($func as function(*), $meta as element(
  : @param $meta the function description
  : @param $test-assumption-failed-function A callback for reporting the failure of assumptions
  :
- : @return Any assumption annotations where the asusmption did not hold true
+ : @return Any assumption annotations where the assumption did not hold true
  :)
 declare
     %private
-function test:test-assumptions($meta as element(function), $test-assumption-failed-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?) as element(annotation)* {
+function test:test-assumptions(
+        $meta as element(function),
+        $test-assumption-failed-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?
+) as element(annotation)* {
     let $assumption-annotations := $meta/annotation[matches(@name,  "[^:]+:assume.+")]
     return
         let $failed-assumption-annotations := $assumption-annotations ! test:test-assumption(., $test-assumption-failed-function)
         return
             (
-                if(not(empty($test-assumption-failed-function))) then
+                if (not(empty($test-assumption-failed-function))) then
                     $failed-assumption-annotations ! $test-assumption-failed-function(
-                            test:get-test-name($meta),
-                            map {
-                                "name": ./string(@name),
-                                "value": ./value/string()
-                            }
+                        test:get-test-name($meta),
+                        map {
+                            "name": ./string(@name),
+                            "value": ./value/string()
+                        }
                     )
                 else ()
                 ,
@@ -261,10 +335,13 @@ function test:test-assumptions($meta as element(function), $test-assumption-fail
 
 declare
     %private
-function test:test-assumption($assumption-annotation as element(annotation), $test-assumption-failed-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?) as element(annotation)? {
-    if(ends-with($assumption-annotation/@name, ":assumeInternetAccess"))then
+function test:test-assumption(
+        $assumption-annotation as element(annotation),
+        $test-assumption-failed-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?
+) as element(annotation)? {
+    if (ends-with($assumption-annotation/@name, ":assumeInternetAccess")) then
         (: check for internet access :)
-         try {
+        try {
             let $uri := $assumption-annotation/value/text()
             return
                 (: set a timeout of 3 seconds :)
@@ -274,29 +351,47 @@ function test:test-assumption($assumption-annotation as element(annotation), $te
                 let $response := http:send-request(<http:request method="head" href="{$uri}" timeout="3"/>)[1]
                 return
                 :)
-                    () (: nothing failed :)
-         } catch * {
+                () (: nothing failed :)
+        } catch * {
             $assumption-annotation (: return the annotation as failed :)
-         }
+        }
     else()
+};
+
+(:~
+ : Merge optional line/source from util:inspect-function $meta into the actual map for the failure callback (IDE location).
+ :)
+declare %private function test:actual-with-location($actual as map(xs:string, item()?), $meta as element(function)) as map(xs:string, item()?) {
+    map:merge((
+        $actual,
+        if (exists($meta/@line)) then map { "line": $meta/@line/data() } else map {},
+        if (exists($meta/@source)) then map { "source": $meta/@source/string() } else map {}
+    ))
 };
 
 (:~
  : The main function for running a single test. Executes the test function
  : and compares the result against each assertXXX annotation.
  :)
-declare %private function test:test($func as function(*), $meta as element(function), $firstArg as element(annotation)?,
+declare %private function test:test(
+        $func as function(*),
+        $meta as element(function),
+        $firstArg as element(annotation)?,
         $test-started-function as (function(xs:string) as empty-sequence())?,
         $test-failure-function as (function(xs:string, map(xs:string, item()?), map(xs:string, item()?)) as empty-sequence())?,
         $test-error-function as (function(xs:string, map(xs:string, item()?)?) as empty-sequence())?,
-        $test-finished-function as (function(xs:string) as empty-sequence())?) {
+        $test-finished-function as (function(xs:string) as empty-sequence())?
+) {
     let $args := test:get-run-args($firstArg)
     let $assertions := test:get-assertions($meta, $firstArg)
     let $assertError := $assertions[contains(@name, ":assertError")]
     return
         if (exists($assertions)) then
         (
-            if(not(empty($test-started-function))) then $test-started-function(test:get-test-name($meta)) else (),
+            if (not(empty($test-started-function))) then
+                $test-started-function(test:get-test-name($meta))
+            else ()
+            ,
             try {
                 let $result := test:call-test($func, $meta, $args)
                 let $assertResult := test:check-assertions($assertions, $result)
@@ -310,14 +405,16 @@ declare %private function test:test($func as function(*), $meta as element(funct
                                         "error": $assertError/value/string()
                                     },
                                     (: actual :)
-                                    map {
+                                    test:actual-with-location(map {
                                         "error": map {
                                             "value": $result
                                         }
-                                    }
+                                    }, $meta)
                             )
                         else (),
-                        test:print-result($meta, $result,
+                        test:print-result(
+                            $meta,
+                            $result,
                             <report>
                                 <failure message="Expected error {$assertError/value/string()}."
                                     type="failure-error-code-1"/>
@@ -332,17 +429,46 @@ declare %private function test:test($func as function(*), $meta as element(funct
                                         "value": test:expected-strings($assertResult)
                                     },
                                     (: actual :)
-                                    map {
+                                    test:actual-with-location(map {
                                         "result": test:actual-strings($assertResult)
-                                    }
+                                    }, $meta)
                             )
                         else(),
                         test:print-result($meta, $result, $assertResult)
                     )
+            } catch test:failure {
+                (: when test:fail was called read expected and actual values from $err:value :)
+                (: expected and actual values can be function types and need to be serialized :)
+                let $serialized-expected := serialize($err:value?expected, map {"method": "adaptive"})
+                let $serialized-actual := serialize($err:value?actual, map {"method": "adaptive"})
+
+                return (
+                    if (not(empty($test-failure-function))) then
+                        $test-failure-function(
+                            test:get-test-name($meta),
+                            (: expected :)
+                            map { "value": $serialized-expected },
+                            (: actual :)
+                            test:actual-with-location(map { "result": $serialized-actual }, $meta)
+                        )
+                    else ()
+                    ,
+                    test:print-result(
+                        $meta,
+                        $serialized-actual,
+                        <report>
+                            <failure message="{ $err:description }" type="{$err:value?type}" />
+                            <output>{ $serialized-actual }</output>
+                        </report>
+                    )
+                )
             } catch * {
                 if ($assertError) then
-                    if ($assertError/value and not(contains($err:code, $assertError/value/string())
-                            or matches($err:description, $assertError/value/string())))then
+                    if (
+                        $assertError/value
+                        and not(contains($err:code, $assertError/value/string())
+                        or matches($err:description, $assertError/value/string()))
+                    ) then
                     (
                         if(not(empty($test-failure-function))) then
                             $test-failure-function(test:get-test-name($meta),
@@ -351,7 +477,7 @@ declare %private function test:test($func as function(*), $meta as element(funct
                                         "error": $assertError/value/string()
                                     },
                                     (: actual :)
-                                    map {
+                                    test:actual-with-location(map {
                                         "error": map {
                                             "code": $err:code,
                                             "description": $err:description,
@@ -363,7 +489,7 @@ declare %private function test:test($func as function(*), $meta as element(funct
                                             "xquery-stack-trace": $exerr:xquery-stack-trace,
                                             "java-stack-trace": $exerr:java-stack-trace
                                         }
-                                    }
+                                    }, $meta)
                             )
                         else ()
                         ,
@@ -378,30 +504,35 @@ declare %private function test:test($func as function(*), $meta as element(funct
                         test:print-result($meta, (), ())
                 else
                 (
-                    if(not(empty($test-error-function))) then
-                        $test-error-function(test:get-test-name($meta),
-                                map {
-                                    "code": $err:code,
-                                    "description": $err:description,
-                                    "value": $err:value,
-                                    "module": $err:module,
-                                    "line-number": $err:line-number,
-                                    "column-number": $err:column-number,
-                                    "additional": $err:additional,
-                                    "xquery-stack-trace": $exerr:xquery-stack-trace,
-                                    "java-stack-trace": $exerr:java-stack-trace
-                                }
+                    if (not(empty($test-error-function))) then
+                        $test-error-function(
+                            test:get-test-name($meta),
+                            map {
+                                "code": $err:code,
+                                "description": $err:description,
+                                "value": $err:value,
+                                "module": $err:module,
+                                "line-number": $err:line-number,
+                                "column-number": $err:column-number,
+                                "additional": $err:additional,
+                                "xquery-stack-trace": $exerr:xquery-stack-trace,
+                                "java-stack-trace": $exerr:java-stack-trace
+                            }
                         )
                     else ()
                     ,
-                    test:print-result($meta, (),
+                    test:print-result(
+                        $meta,
+                        (),
                         <report>
                             <error type="{$err:code}" message="{$err:description}"/>
                         </report>
                     )
                 )
             },
-            if(not(empty($test-finished-function))) then $test-finished-function(test:get-test-name($meta)) else ()
+            if (not(empty($test-finished-function))) then
+                $test-finished-function(test:get-test-name($meta))
+            else ()
         )
         else
             ()
@@ -412,7 +543,9 @@ declare function test:expected-strings($report as element(report)+) {
         for $report-failure in $report/failure
         return
             string-join($report-failure/text(), ", ") || " (" || $report-failure/@message || ")"
-    , ", ")
+        ,
+        ", "
+    )
 };
 
 declare function test:actual-strings($report as element(report)+) {
@@ -479,7 +612,11 @@ declare %private function test:get-run-args($firstArg as element(annotation)?) a
  : Map any arguments from the %args or %arg annotations into function parameters and evaluate
  : the resulting function.
  :)
-declare %private function test:call-test($func as function(*), $meta as element(function), $args as element(annotation)*) {
+declare %private function test:call-test(
+        $func as function(*),
+        $meta as element(function),
+        $args as element(annotation)*
+) {
     let $funArgs :=
         if ($args[1]/@name = "test:args") then
             test:map-arguments($args/value, $meta/argument)
@@ -697,20 +834,28 @@ declare %private function test:get-test-name($meta as element(function)) as xs:s
  :)
 declare %private function test:print-result($meta as element(function), $result as item()*,
         $assertResult as element(report)*) {
-    <testcase name="{test:get-test-name($meta)}" class="{$meta/@name}">
-    {
+    element testcase {
+        attribute name { test:get-test-name($meta) },
+        attribute class { $meta/@name },
+        if (exists($meta/@line)) then attribute line { $meta/@line/data() } else (),
+        (: Prefer inspect source; fallback to module namespace so eXide report has a location (e.g. when no file source) :)
+        if (exists($meta/@source)) then attribute source { $meta/@source/string() }
+        else if (exists($meta/@module)) then attribute source { $meta/@module/string() }
+        else (),
         if (exists($assertResult)) then
             ($assertResult[failure] | $assertResult)[1]/*
         else
             ()
     }
-    </testcase>
 };
 
 (:~
  : Check the function's return value against each assertion.
  :)
-declare %private function test:check-assertions($assertions as element(annotation)*, $result as item()*) as element(report)* {
+declare %private function test:check-assertions(
+        $assertions as element(annotation)*,
+        $result as item()*
+) as element(report)* {
     for $annotation in $assertions
     let $assert := replace($annotation/@name, "^\w+:(.*)$", "$1")
     return
@@ -810,7 +955,12 @@ declare %private function test:equals($annotation-value as element(value), $resu
             default return
                 $result
     let $value := test:xdm-value-from-annotation-value($annotation-value)
-    let $normValue := test:cast-to-type($value, $result)
+    let $normValue :=
+        typeswitch ($result)
+            case node() return
+                test:cast-to-type($value, $result) => test:normalize()
+            default return
+                test:cast-to-type($value, $result)
     return
         typeswitch ($normResult)
             case node() return

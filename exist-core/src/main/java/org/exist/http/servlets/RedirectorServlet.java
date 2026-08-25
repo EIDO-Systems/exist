@@ -46,10 +46,10 @@ import jakarta.servlet.ServletException;
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import java.io.IOException;
+import java.io.Serial;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 
 import static java.nio.charset.StandardCharsets.UTF_8;
@@ -107,6 +107,7 @@ import static java.nio.charset.StandardCharsets.UTF_8;
 @Deprecated
 public class RedirectorServlet extends AbstractExistHttpServlet {
 
+    @Serial
     private static final long serialVersionUID = 853971301553787943L;
 
     private static final Logger LOG = LogManager.getLogger(RedirectorServlet.class);
@@ -159,7 +160,12 @@ public class RedirectorServlet extends AbstractExistHttpServlet {
             }
         // Try to find the XQuery
         final String qpath = getServletContext().getRealPath(query);
-        final Path p = Paths.get(qpath);
+        // the Servlet API permits getRealPath() to return null when the webapp is not exploded
+        // on disk (e.g. served from a packed/embedded context).
+        if (qpath == null) {
+            throw new ServletException("Cannot read XQuery source from " + query);
+        }
+        final Path p = Path.of(qpath);
         if (!(Files.isReadable(p) && Files.isRegularFile(p))) {
             throw new ServletException("Cannot read XQuery source from " + p.toAbsolutePath());
         }

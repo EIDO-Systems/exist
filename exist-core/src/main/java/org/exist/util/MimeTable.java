@@ -25,7 +25,6 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
@@ -71,7 +70,7 @@ public class MimeTable {
     private static final String MIME_TYPES_XML = "mime-types.xml";
     private static final String MIME_TYPES_XML_DEFAULT = "org/exist/util/" + MIME_TYPES_XML;    
     
-    private static MimeTable instance = null;
+    private static volatile MimeTable instance = null;
     /** From where the mime table is loaded for message purpose */
     private String src;
     
@@ -81,8 +80,12 @@ public class MimeTable {
      * @return the mimetable
      */
     public static MimeTable getInstance() {
-        if(instance == null) {
-            instance = new MimeTable();
+        if (instance == null) {
+            synchronized (MimeTable.class) {
+                if (instance == null) {
+                    instance = new MimeTable();
+                }
+            }
         }
         return instance;
     }
@@ -96,7 +99,11 @@ public class MimeTable {
      */
     public static MimeTable getInstance(final Path path) {
         if (instance == null) {
-            instance = new MimeTable(path);
+            synchronized (MimeTable.class) {
+                if (instance == null) {
+                    instance = new MimeTable(path);
+                }
+            }
         }
         return instance;
     }
@@ -112,7 +119,11 @@ public class MimeTable {
      */
     public static MimeTable getInstance(final InputStream stream, final String src) {
         if (instance == null) {
-            instance = new MimeTable(stream, src);
+            synchronized (MimeTable.class) {
+                if (instance == null) {
+                    instance = new MimeTable(stream, src);
+                }
+            }
         }
         return instance;
     }
@@ -127,16 +138,16 @@ public class MimeTable {
     }
     
     public MimeTable(final Path path) {
-        if (Files.isReadable(path)) {
-            try {
-                LOG.info("Loading mime table from file: {}", path.toAbsolutePath().toString());
-                try(final InputStream is = Files.newInputStream(path)) {
-                    loadMimeTypes(is);
-                }
-                this.src = path.toUri().toString();
-            } catch (final ParserConfigurationException | SAXException | IOException e) {
-                LOG.error(FILE_LOAD_FAILED_ERR + "{}", path.toAbsolutePath().toString(), e);
-            }
+        if (!Files.isReadable(path)) {
+            throw new IllegalStateException(FILE_LOAD_FAILED_ERR + path.toAbsolutePath() + ": file not readable");
+        }
+        try (final InputStream is = Files.newInputStream(path)) {
+            LOG.info("Loading mime table from file: {}", path.toAbsolutePath());
+            final String sourceDescription = path.toUri().toString();
+            loadMimeTypes(is, sourceDescription);
+            this.src = sourceDescription;
+        } catch (final ParserConfigurationException | SAXException | IOException e) {
+            throw new IllegalStateException(FILE_LOAD_FAILED_ERR + path.toAbsolutePath(), e);
         }
     }
     
@@ -224,7 +235,7 @@ public class MimeTable {
     }
     
     private String getExtension(String fileName) {
-        final Path path = Paths.get(fileName);
+        final Path path = Path.of(fileName);
         fileName = FileUtils.fileName(path);
         final int p = fileName.lastIndexOf('.');
         if(p < 0 || p + 1 == fileName.length()) {
@@ -237,39 +248,27 @@ public class MimeTable {
         final ClassLoader cl = MimeTable.class.getClassLoader();
         final InputStream is = cl.getResourceAsStream(MIME_TYPES_XML_DEFAULT);
         if (is == null) {
-            LOG.error(LOAD_FAILED_ERR);
+            throw new IllegalStateException(LOAD_FAILED_ERR + ": classpath resource not found: " + MIME_TYPES_XML_DEFAULT);
         }
-
-        try {
-            loadMimeTypes(is);
-            this.src = "resource://" + MIME_TYPES_XML_DEFAULT;
-        } catch (final ParserConfigurationException | SAXException | IOException e) {
-            LOG.error(LOAD_FAILED_ERR, e);
-        }
+        loadFromStream(is, "resource://" + MIME_TYPES_XML_DEFAULT);
     }
     
     private void load(final InputStream stream, final String src) {
-        boolean loaded = false;
         LOG.info("Loading mime table from stream: {}", src);
         try {
-        	loadMimeTypes(stream);
-        	this.src=src;
-        } catch (final ParserConfigurationException | SAXException | IOException e) {
-            LOG.error(LOAD_FAILED_ERR, e);
+            loadFromStream(stream, src);
+        } catch (final IllegalStateException e) {
+            LOG.warn("Failed to load mime table from {}, falling back to classpath default", src, e);
+            load();
         }
-    	
-        if (!loaded) {
-            final ClassLoader cl = MimeTable.class.getClassLoader();
-            final InputStream is = cl.getResourceAsStream(MIME_TYPES_XML_DEFAULT);
-            if (is == null) {
-                LOG.error(LOAD_FAILED_ERR);
-            }
-            try {
-                loadMimeTypes(is);
-                this.src="resource://"+MIME_TYPES_XML_DEFAULT;
-            } catch (final ParserConfigurationException | SAXException | IOException e) {
-                LOG.error(LOAD_FAILED_ERR, e);
-            }
+    }
+
+    private void loadFromStream(final InputStream stream, final String sourceDescription) {
+        try (stream) {
+            loadMimeTypes(stream, sourceDescription);
+            this.src = sourceDescription;
+        } catch (final ParserConfigurationException | SAXException | IOException e) {
+            throw new IllegalStateException("Failed to load mime-type table from " + sourceDescription, e);
         }
     }
 
@@ -277,16 +276,17 @@ public class MimeTable {
      * Load Mime Types
      *
      * @param stream input stream.
+     * @param sourceDescription description of the stream's origin, for diagnostic messages.
      *
      * @throws SAXException if an error occurs whilst reading the XML stream
      * @throws ParserConfigurationException if an error occurs whilst parsing the stream
      * @throws IOException if an error occurs whilst reading the stream
      */
-    private void loadMimeTypes(final InputStream stream) throws ParserConfigurationException, SAXException, IOException {
+    private void loadMimeTypes(final InputStream stream, final String sourceDescription) throws ParserConfigurationException, SAXException, IOException {
         final SAXParserFactory factory = ExistSAXParserFactory.getSAXParserFactory();
         factory.setNamespaceAware(true);
         factory.setValidating(false);
-		final InputSource src = new InputSource(stream);
+		final InputSource inputSource = new InputSource(stream);
         final SAXParser parser = factory.newSAXParser();
         final XMLReader reader = parser.getXMLReader();
 
@@ -294,8 +294,8 @@ public class MimeTable {
         reader.setFeature("http://xml.org/sax/features/external-parameter-entities", false);
         reader.setFeature(FEATURE_SECURE_PROCESSING, true);
 
-        reader.setContentHandler(new MimeTableHandler());
-        reader.parse(src);
+        reader.setContentHandler(new MimeTableHandler(sourceDescription));
+        reader.parse(inputSource);
     }
 
     private class MimeTableHandler extends DefaultHandler {
@@ -304,9 +304,14 @@ public class MimeTable {
         private static final String DESCRIPTION = "description";
         private static final String MIME_TYPE = "mime-type";
         private static final String MIME_TYPES = "mime-types";
-        
+
+        private final String sourceDescription;
         private MimeType mime = null;
         private final StringBuilder charBuf = new StringBuilder(64);
+
+        MimeTableHandler(final String sourceDescription) {
+            this.sourceDescription = sourceDescription;
+        }
 
         @Override
         public void startElement(String uri, String localName, String qName,
@@ -314,6 +319,8 @@ public class MimeTable {
 
 
             if (MIME_TYPES.equals(qName)) {
+                SchemaVersion.logDocumentVersion(LOG, attributes.getValue(SchemaVersion.ATTRIBUTE),
+                        SchemaVersion.MIME_TYPES, sourceDescription != null ? "mime-types.xml (" + sourceDescription + ")" : "mime-types.xml");
                 // Check for a default mime type settings
                 final String defaultMimeAttr = attributes.getValue("default-mime-type");
                 final String defaultTypeAttr = attributes.getValue("default-resource-type");

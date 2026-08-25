@@ -24,7 +24,6 @@ package org.exist.webstart;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -33,7 +32,6 @@ import java.util.stream.Collectors;
 
 import org.apache.logging.log4j.LogManager;
 import org.apache.logging.log4j.Logger;
-import org.exist.start.LatestFileResolver;
 import org.exist.util.FileUtils;
 
 /**
@@ -61,13 +59,13 @@ public class JnlpJarFiles {
             "commons-pool-%latest%",
             "jargo-%latest%",
             "bcprov-jdk18on-%latest%",
-            "fastutil-%latest%-min",
+            "fastutil-%latest%",
             "j8fu-%latest%",
-            "jackson-core-%latest%",
+            "jackson-core-%latest%", // 2 and 3 on path
             "jcip-annotations-%latest%",
-            "jline-%latest%",
+            "jline-%latest%-jdk11",
             "jansi-%latest%",
-            "jta-%latest%",
+            //"jta-%latest%",
             "log4j-api-%latest%",
             "log4j-core-%latest%",
             "log4j-jul-%latest%",
@@ -96,7 +94,7 @@ public class JnlpJarFiles {
     private Path getJarFromLocation(final Path folder, final String jarFileBaseName) {
         final String fileToFind = folder.normalize().toAbsolutePath().toString() + java.io.File.separatorChar + jarFileBaseName + ".jar";
         final String resolvedFile = jarFileResolver.getResolvedFileName(fileToFind);
-        final Path jar = Paths.get(resolvedFile).normalize();
+        final Path jar = Path.of(resolvedFile).normalize();
         if (Files.exists(jar)) {
             LOGGER.debug("Found match: {} for file pattern: {}", resolvedFile, fileToFind);
             return jar;
@@ -165,7 +163,7 @@ public class JnlpJarFiles {
 
     private Path getJarPackGz(final Path jarName) {
         final String path = jarName.toAbsolutePath() + ".pack.gz";
-        final Path pkgz = Paths.get(path);
+        final Path pkgz = Path.of(path);
 
         if (Files.exists(pkgz)) {
             return pkgz;

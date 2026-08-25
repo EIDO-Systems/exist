@@ -1,5 +1,13 @@
 name: XQTS
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    # Keep a fresh baseline on develop: the xqts-logs artifact expires after
+    # 14 days, so during quiet periods on develop the PR comparison would
+    # otherwise lose its baseline (and drift ever further from the PR base).
+    - cron: '17 2 * * 0,3'
 permissions:
   contents: read
 
@@ -7,21 +15,25 @@ jobs:
   xqts:
     name: W3C XQuery Test Suite
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
-          distribution: liberica
+          distribution: temurin
           java-version: '21'
-      - name: Cache Maven packages
-        uses: actions/cache@v4
+      - uses: ./.github/actions/maven-cache
+      - uses: ./.github/actions/maven-github-settings
         with:
-          path: ~/.m2
-          key: xqts-${{ runner.os }}-maven-${{ hashFiles('**/pom.xml') }}
-          restore-keys: xqts-${{ runner.os }}-maven
+          token: ${{ secrets.GITHUB_TOKEN }}
       - name: Maven XQTS Build
-        run: mvn -V -B clean package -DskipTests -Ddependency-check.skip=true --projects exist-xqts --also-make
+        timeout-minutes: 25
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        # `install` rather than `package` so that the xqts-compare goal below can
+        # resolve the exist-xqts dependencies from the local repository.
+        run: mvn -V -B --no-transfer-progress clean install -DskipTests -Ddependency-check.skip=true --projects exist-xqts --also-make
       - name: Run XQTS
         timeout-minutes: 60
         env:
@@ -37,29 +49,91 @@ jobs:
         run: zstd --rm -9 --progress -T0 /tmp/*.hprof
       - name: Attach HeapDump artifact
         if: steps.check_heapdump.outputs.files_exists == 'true'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: exist-xqts-runner-hprof
           retention-days: 1
           path: /tmp/*.hprof.zst
+      - name: Find Latest Successful XQTS Run on Develop
+        id: find-baseline
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          RUN_ID=$(gh run list \
+            --repo eXist-db/exist \
+            --workflow ci-xqts.yml \
+            --branch develop \
+            --status success \
+            --limit 1 \
+            --json databaseId \
+            --jq '.[0].databaseId')
+
+          if [ -z "$RUN_ID" ] || [ "$RUN_ID" = "null" ]; then
+            echo "::warning::Could not find a previous successful XQTS run on develop — skipping the comparison"
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Found develop run: ${RUN_ID}"
+            echo "found=true" >> "$GITHUB_OUTPUT"
+            echo "run-id=${RUN_ID}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Download Previous XQTS Logs
+        id: download-baseline
+        if: steps.find-baseline.outputs.found == 'true'
+        # The baseline's xqts-logs artifact may have expired (14-day
+        # retention). Treat that as "no baseline" rather than failing, so
+        # runs on develop can still publish a fresh baseline artifact —
+        # otherwise an expired baseline would permanently fail every run.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh run download \
+            --repo eXist-db/exist \
+            "${{ steps.find-baseline.outputs.run-id }}" \
+            --name xqts-logs \
+            --dir /tmp/previous-xqts-output
+      - name: Note Missing Baseline
+        if: steps.download-baseline.outcome != 'success'
+        run: |
+          {
+            echo "> [!WARNING]"
+            echo "> No usable XQTS comparison baseline for \`develop\` was available (no successful run found, or its \`xqts-logs\` artifact expired) — the comparison was skipped. The next successful run on \`develop\` publishes a fresh baseline."
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Compare Previous and Current XQTS Results
+        if: steps.download-baseline.outcome == 'success'
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          mvn -B --no-transfer-progress -pl exist-xqts exec:exec@xqts-compare \
+            -Dprevious-result=/tmp/previous-xqts-output \
+            -Dcurrent-result=/tmp/xqts-output \
+            -Dcomparison-output-dir=/tmp/xqts-comparison \
+            -Dprevious-label='`develop`' \
+            -Dcurrent-label='this run'
+      - name: Show Comparison Results
+        if: steps.download-baseline.outcome == 'success'
+        run: cat /tmp/xqts-comparison/comparison-results.xml
+      - name: Publish Comparison Summary
+        # Surface the report on the run's Summary tab (works for fork PRs too)
+        if: steps.download-baseline.outcome == 'success'
+        run: cat /tmp/xqts-comparison/comparison-results.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Save PR Number
+        if: github.event_name == 'pull_request' && steps.download-baseline.outcome == 'success'
+        run: echo "${{ github.event.pull_request.number }}" > /tmp/xqts-comparison/pr-number.txt
+      - name: Upload XQTS Comparison
+        # Consumed by the ci-xqts-comment.yml workflow_run, which posts the
+        # comparison as a PR comment with a write-enabled token (needed for
+        # PRs from forks, where this workflow's token is read-only).
+        if: github.event_name == 'pull_request' && steps.download-baseline.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: xqts-comparison
+          retention-days: 3
+          path: /tmp/xqts-comparison
       - name: Archive XQTS Logs
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: xqts-logs
           retention-days: 14
           path: /tmp/xqts-output
-      - name: Get Previous XQTS Logs Artifacts JSON
-        run: 'curl -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" https://api.github.com/repos/exist-db/exist/actions/artifacts?name=xqts-logs > /tmp/previous-xqts-logs-artifacts.json'
-      - name: Extract Previous XQTS Logs Artifact JSON
-        run: cat /tmp/previous-xqts-logs-artifacts.json | jq -r "[.artifacts[] | select(.workflow_run.head_branch == \"develop\")][1].archive_download_url" > /tmp/previous-xqts-logs-artifact.json
-      - name: Get Previous XQTS Logs Artifact
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: 'cat /tmp/previous-xqts-logs-artifact.json | xargs curl -H "Authorization: Bearer ${GITHUB_TOKEN}" --location --output /tmp/previous-xqts-output.zip'
-      - name: Extract Previous XQTS Logs Artifact
-        run: mkdir /tmp/previous-xqts-output && unzip /tmp/previous-xqts-output.zip -d /tmp/previous-xqts-output
-      - name: Compare Previous and Current XQTS Logs
-        run: java -jar ~/.m2/repository/net/sf/saxon/Saxon-HE/9.9.1-8/Saxon-HE-9.9.1-8.jar -xsl:exist-xqts/src/main/xslt/compare-results.xslt -it:compare-results -o:/tmp/comparison-results.xml xqts.previous.junit-data-path=/tmp/previous-xqts-output/junit/data xqts.current.junit-data-path=/tmp/xqts-output/junit/data
-      - name: Show Comparison Results
-        run: cat /tmp/comparison-results.xml

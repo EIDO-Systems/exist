@@ -41,7 +41,7 @@ import java.util.StringTokenizer;
 
 
 /**
- * DOCUMENT ME!
+ * Abstract base class for Ant tasks interacting with an XMLDB database.
  *
  * @author  wolf
  * @author  andrzej@chaeron.com
@@ -167,7 +167,7 @@ public abstract class AbstractXMLDBTask extends Task
             }
 
             final Class<?> clazz    = Class.forName( driver );
-            final Database database = (Database)clazz.newInstance();
+            final Database database = (Database)clazz.getDeclaredConstructor().newInstance();
             database.setProperty( "create-database", createDatabase ? "true" : "false" );
             database.setProperty( "ssl-enable", ssl ? "true" : "false" );
 

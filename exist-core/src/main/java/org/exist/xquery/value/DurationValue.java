@@ -33,6 +33,7 @@ import javax.xml.datatype.Duration;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.math.RoundingMode;
+import java.util.Objects;
 
 /**
  * @author <a href="mailto:piotr@ideanest.com">Piotr Kaminski</a>
@@ -52,6 +53,23 @@ public class DurationValue extends ComputableValue {
     protected static final BigDecimal
             SIXTY_DECIMAL = BigDecimal.valueOf(60),
             ZERO_DECIMAL = BigDecimal.ZERO;
+
+    // XQuery 3.1 §10.1.1 leaves duration value-space limits implementation-defined.
+    // We cap signed total seconds (xdt:dayTimeDuration) and signed total months
+    // (xdt:yearMonthDuration) at the long range; values outside raise FODT0002.
+    protected static final BigDecimal MAX_DAY_TIME_SECONDS = new BigDecimal(Long.MAX_VALUE);
+    protected static final BigInteger MAX_YEAR_MONTH_MONTHS = BigInteger.valueOf(Long.MAX_VALUE);
+
+    // Cap on the day-time magnitude of a duration when used in xs:date /
+    // xs:dateTime / xs:time arithmetic. XMLGregorianCalendar.add() iterates
+    // proportionally to the day count, so very large day-time durations make
+    // a single add() call take seconds to hours (issue #5045). The threshold
+    // below caps worst-case latency at well under one second on modern hardware
+    // while permitting +/- 1 million Gregorian years of arithmetic, which
+    // exceeds any realistic use of date/time arithmetic.
+    private static final long DATE_ARITH_DAYS_LIMIT = 365_242_500L; // 1,000,000 Gregorian years
+    protected static final BigDecimal MAX_DATE_ARITH_SECONDS =
+            BigDecimal.valueOf(DATE_ARITH_DAYS_LIMIT).multiply(BigDecimal.valueOf(86_400L));
     protected static final Duration CANONICAL_ZERO_DURATION =
             TimeUtils.getInstance().newDuration(true, null, null, null, null, null, ZERO_DECIMAL);
     protected final Duration duration;
@@ -73,10 +91,28 @@ public class DurationValue extends ComputableValue {
     public DurationValue(final Expression expression, String str) throws XPathException {
         super(expression);
         try {
-            this.duration = TimeUtils.getInstance().newDuration(StringValue.trimWhitespace(str));
+            final String trimmed = StringValue.trimWhitespace(str);
+            // XML Schema requires digits on both sides of a decimal point in durations.
+            // Java's DatatypeFactory is too lenient and accepts forms like "PT.5S" or "PT30.S".
+            validateDurationDecimal(trimmed);
+            this.duration = TimeUtils.getInstance().newDuration(trimmed);
         } catch (final IllegalArgumentException e) {
             throw new XPathException(getExpression(), ErrorCodes.FORG0001, "cannot construct " + Type.getTypeName(this.getItemType()) +
                     " from \"" + str + "\"");
+        }
+    }
+
+    static void validateDurationDecimal(final String str) {
+        final int dotIdx = str.indexOf('.');
+        if (dotIdx >= 0) {
+            // Must have at least one digit before the decimal point
+            if (dotIdx == 0 || !Character.isDigit(str.charAt(dotIdx - 1))) {
+                throw new IllegalArgumentException("Invalid duration: missing digit before decimal point in \"" + str + "\"");
+            }
+            // Must have at least one digit after the decimal point (before the letter suffix)
+            if (dotIdx + 1 >= str.length() || !Character.isDigit(str.charAt(dotIdx + 1))) {
+                throw new IllegalArgumentException("Invalid duration: missing digit after decimal point in \"" + str + "\"");
+            }
         }
     }
 
@@ -99,32 +135,20 @@ public class DurationValue extends ComputableValue {
         }
     }
 
-    private static BigInteger nullIfZero(BigInteger x) {
-        if (BigInteger.ZERO.compareTo(x) == Constants.EQUAL) {
-            x = null;
-        }
-        return x;
+    private static BigInteger nullIfZero(final BigInteger x) {
+        return BigInteger.ZERO.compareTo(x) == Constants.EQUAL ? null : x;
     }
 
-    private static BigInteger zeroIfNull(BigInteger x) {
-        if (x == null) {
-            x = BigInteger.ZERO;
-        }
-        return x;
+    private static BigInteger zeroIfNull(final BigInteger x) {
+        return x == null ? BigInteger.ZERO : x;
     }
 
-    private static BigDecimal nullIfZero(BigDecimal x) {
-        if (ZERO_DECIMAL.compareTo(x) == Constants.EQUAL) {
-            x = null;
-        }
-        return x;
+    private static BigDecimal nullIfZero(final BigDecimal x) {
+        return ZERO_DECIMAL.compareTo(x) == Constants.EQUAL ? null : x;
     }
 
-    private static BigDecimal zeroIfNull(BigDecimal x) {
-        if (x == null) {
-            x = ZERO_DECIMAL;
-        }
-        return x;
+    private static BigDecimal zeroIfNull(final BigDecimal x) {
+        return x == null ? ZERO_DECIMAL : x;
     }
 
     public static boolean areReallyEqual(Duration duration1, Duration duration2) {
@@ -169,7 +193,11 @@ public class DurationValue extends ComputableValue {
             return;
         }
 
-        BigInteger years, months, days, hours, minutes;
+        BigInteger years;
+        BigInteger months;
+        BigInteger days;
+        BigInteger hours;
+        BigInteger minutes;
         BigDecimal seconds;
         BigInteger[] r;
 
@@ -237,34 +265,42 @@ public class DurationValue extends ComputableValue {
         return x;
     }
 
+    protected void checkDayTimeOverflow(final BigDecimal seconds) throws XPathException {
+        if (seconds.abs().compareTo(MAX_DAY_TIME_SECONDS) > 0) {
+            throw new XPathException(getExpression(), ErrorCodes.FODT0002,
+                    "Overflow/underflow in xdt:dayTimeDuration operation");
+        }
+    }
+
+    protected void checkYearMonthOverflow(final BigInteger months) throws XPathException {
+        if (months.abs().compareTo(MAX_YEAR_MONTH_MONTHS) > 0) {
+            throw new XPathException(getExpression(), ErrorCodes.FODT0002,
+                    "Overflow/underflow in xdt:yearMonthDuration operation");
+        }
+    }
+
+    protected void checkDateArithMagnitude(final BigDecimal seconds) throws XPathException {
+        if (seconds.abs().compareTo(MAX_DATE_ARITH_SECONDS) > 0) {
+            throw new XPathException(getExpression(), ErrorCodes.FODT0001,
+                    "Overflow/underflow in date/time operation: duration "
+                            + this + " is too large for date/time arithmetic");
+        }
+    }
+
     protected Duration canonicalZeroDuration() {
         return CANONICAL_ZERO_DURATION;
     }
 
-    public int getPart(int part) {
-        int r;
-        switch (part) {
-            case YEAR:
-                r = duration.getYears();
-                break;
-            case MONTH:
-                r = duration.getMonths();
-                break;
-            case DAY:
-                r = duration.getDays();
-                break;
-            case HOUR:
-                r = duration.getHours();
-                break;
-            case MINUTE:
-                r = duration.getMinutes();
-                break;
-            case SIGN:
-                return duration.getSign();
-            default:
-                throw new IllegalArgumentException("Invalid argument to method getPart");
-        }
-        return r * duration.getSign();
+    public int getPart(final int part) {
+        return switch (part) {
+            case YEAR -> duration.getYears() * duration.getSign();
+            case MONTH -> duration.getMonths() * duration.getSign();
+            case DAY -> duration.getDays() * duration.getSign();
+            case HOUR -> duration.getHours() * duration.getSign();
+            case MINUTE -> duration.getMinutes() * duration.getSign();
+            case SIGN -> duration.getSign();
+            default -> throw new IllegalArgumentException("Invalid argument to method getPart");
+        };
     }
 
     public double getSeconds() {
@@ -272,87 +308,69 @@ public class DurationValue extends ComputableValue {
         return n == null ? 0 : n.doubleValue() * duration.getSign();
     }
 
-    public AtomicValue convertTo(int requiredType) throws XPathException {
+    public AtomicValue convertTo(final int requiredType) throws XPathException {
         canonicalize();
-        switch (requiredType) {
-            case Type.ITEM:
-            case Type.ANY_ATOMIC_TYPE:
-            case Type.DURATION:
-                return new DurationValue(getExpression(), canonicalDuration);
-            case Type.YEAR_MONTH_DURATION:
-                if (canonicalDuration.getField(DatatypeConstants.YEARS) != null ||
-                        canonicalDuration.getField(DatatypeConstants.MONTHS) != null) {
-                    return new YearMonthDurationValue(getExpression(), TimeUtils.getInstance().newDurationYearMonth(
-                            canonicalDuration.getSign() >= 0,
-                            (BigInteger) canonicalDuration.getField(DatatypeConstants.YEARS),
-                            (BigInteger) canonicalDuration.getField(DatatypeConstants.MONTHS)));
-                } else {
-                    return new YearMonthDurationValue(getExpression(), YearMonthDurationValue.CANONICAL_ZERO_DURATION);
-                }
-            case Type.DAY_TIME_DURATION:
-                if (canonicalDuration.isSet(DatatypeConstants.DAYS) ||
-                        canonicalDuration.isSet(DatatypeConstants.HOURS) ||
-                        canonicalDuration.isSet(DatatypeConstants.MINUTES) ||
-                        canonicalDuration.isSet(DatatypeConstants.SECONDS)) {
-                    return new DayTimeDurationValue(getExpression(), TimeUtils.getInstance().newDuration(
-                            canonicalDuration.getSign() >= 0,
-                            null,
-                            null,
-                            (BigInteger) canonicalDuration.getField(DatatypeConstants.DAYS),
-                            (BigInteger) canonicalDuration.getField(DatatypeConstants.HOURS),
-                            (BigInteger) canonicalDuration.getField(DatatypeConstants.MINUTES),
-                            (BigDecimal) canonicalDuration.getField(DatatypeConstants.SECONDS)));
-                } else {
-                    return new DayTimeDurationValue(getExpression(), DayTimeDurationValue.CANONICAL_ZERO_DURATION);
-                }
-            case Type.STRING:
-                canonicalize();
-                return new StringValue(getExpression(), getStringValue());
-            case Type.UNTYPED_ATOMIC:
-                canonicalize();
-                return new UntypedAtomicValue(getExpression(), getStringValue());
-            default:
-                throw new XPathException(getExpression(), ErrorCodes.FORG0001,
-                        "Type error: cannot cast ' + Type.getTypeName(getType()) 'to "
-                                + Type.getTypeName(requiredType));
+        return switch (requiredType) {
+            case Type.ITEM, Type.ANY_ATOMIC_TYPE, Type.DURATION ->
+                    new DurationValue(getExpression(), canonicalDuration);
+            case Type.YEAR_MONTH_DURATION -> toYearMonthDurationValue();
+            case Type.DAY_TIME_DURATION -> toDayTimeDurationValue();
+            case Type.STRING -> new StringValue(getExpression(), getStringValue());
+            case Type.UNTYPED_ATOMIC -> new UntypedAtomicValue(getExpression(), getStringValue());
+            default -> throw new XPathException(getExpression(), ErrorCodes.FORG0001,
+                    "Type error: cannot cast '" + Type.getTypeName(getType()) + "' to "
+                            + Type.getTypeName(requiredType));
+        };
+    }
+
+    private YearMonthDurationValue toYearMonthDurationValue() throws XPathException {
+        if (canonicalDuration.getField(DatatypeConstants.YEARS) != null
+                || canonicalDuration.getField(DatatypeConstants.MONTHS) != null) {
+            return new YearMonthDurationValue(getExpression(), TimeUtils.getInstance().newDurationYearMonth(
+                    canonicalDuration.getSign() >= 0,
+                    (BigInteger) canonicalDuration.getField(DatatypeConstants.YEARS),
+                    (BigInteger) canonicalDuration.getField(DatatypeConstants.MONTHS)));
         }
+        return new YearMonthDurationValue(getExpression(), YearMonthDurationValue.CANONICAL_ZERO_DURATION);
+    }
+
+    private DayTimeDurationValue toDayTimeDurationValue() throws XPathException {
+        if (canonicalDuration.isSet(DatatypeConstants.DAYS)
+                || canonicalDuration.isSet(DatatypeConstants.HOURS)
+                || canonicalDuration.isSet(DatatypeConstants.MINUTES)
+                || canonicalDuration.isSet(DatatypeConstants.SECONDS)) {
+            return new DayTimeDurationValue(getExpression(), TimeUtils.getInstance().newDuration(
+                    canonicalDuration.getSign() >= 0,
+                    null,
+                    null,
+                    (BigInteger) canonicalDuration.getField(DatatypeConstants.DAYS),
+                    (BigInteger) canonicalDuration.getField(DatatypeConstants.HOURS),
+                    (BigInteger) canonicalDuration.getField(DatatypeConstants.MINUTES),
+                    (BigDecimal) canonicalDuration.getField(DatatypeConstants.SECONDS)));
+        }
+        return new DayTimeDurationValue(getExpression(), DayTimeDurationValue.CANONICAL_ZERO_DURATION);
     }
 
     @Override
-    public boolean compareTo(Collator collator, Comparison operator, AtomicValue other) throws XPathException {
-        switch (operator) {
-            case EQ: {
-                if (!(DurationValue.class.isAssignableFrom(other.getClass()))) {
-                    throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "invalid operand type: " + Type.getTypeName(other.getType()));
-                }
-                //TODO : upgrade so that P365D is *not* equal to P1Y
-                boolean r = duration.equals(((DurationValue) other).duration);
-                //confirm strict equality to work around the JDK standard behaviour
-                if (r) {
-                    r = r & areReallyEqual(getCanonicalDuration(), ((DurationValue) other).getCanonicalDuration());
-                }
-                return r;
-            }
-            case NEQ: {
-                if (!(DurationValue.class.isAssignableFrom(other.getClass()))) {
-                    throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "invalid operand type: " + Type.getTypeName(other.getType()));
-                }
-                //TODO : upgrade so that P365D is *not* equal to P1Y
-                boolean r = duration.equals(((DurationValue) other).duration);
-                //confirm strict equality to work around the JDK standard behaviour
-                if (r) {
-                    r = r & areReallyEqual(getCanonicalDuration(), ((DurationValue) other).getCanonicalDuration());
-                }
-                return !r;
-            }
-            case LT:
-            case LTEQ:
-            case GT:
-            case GTEQ:
-                throw new XPathException(getExpression(), ErrorCodes.XPTY0004, Type.getTypeName(other.getType()) + " type can not be ordered");
-            default:
-                throw new IllegalArgumentException("Unknown comparison operator");
+    public boolean compareTo(final Collator collator, final Comparison operator, final AtomicValue other) throws XPathException {
+        return switch (operator) {
+            case EQ -> durationsAreEqual(other);
+            case NEQ -> !durationsAreEqual(other);
+            case LT, LTEQ, GT, GTEQ -> throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
+                    Type.getTypeName(other.getType()) + " type can not be ordered");
+            default -> throw new IllegalArgumentException("Unknown comparison operator");
+        };
+    }
+
+    private boolean durationsAreEqual(final AtomicValue other) throws XPathException {
+        if (!DurationValue.class.isAssignableFrom(other.getClass())) {
+            throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
+                    "invalid operand type: " + Type.getTypeName(other.getType()));
         }
+        //TODO : upgrade so that P365D is *not* equal to P1Y
+        //confirm strict equality to work around the JDK standard behaviour
+        return duration.equals(((DurationValue) other).duration)
+                && areReallyEqual(getCanonicalDuration(), ((DurationValue) other).getCanonicalDuration());
     }
 
     public int compareTo(Collator collator, AtomicValue other) throws XPathException {
@@ -417,9 +435,21 @@ public class DurationValue extends ComputableValue {
         if (this == obj) {
             return true;
         }
-        if (DurationValue.class.isAssignableFrom(obj.getClass())) {
-            return duration.equals(((DurationValue) obj).duration);
+        if (obj == null || !DurationValue.class.isAssignableFrom(obj.getClass())) {
+            return false;
         }
-        return false;
+        final DurationValue other = (DurationValue) obj;
+        return monthsValueSigned().equals(other.monthsValueSigned())
+                && secondsValueSigned().compareTo(other.secondsValueSigned()) == 0;
+    }
+
+    // Hash on canonical (signed total months, signed total seconds) so equal-value instances
+    // across xs:duration / xs:yearMonthDuration / xs:dayTimeDuration share an op:same-key bucket.
+    @Override
+    public int hashCode() {
+        final BigInteger months = monthsValueSigned();
+        BigDecimal seconds = secondsValueSigned();
+        seconds = seconds.signum() == 0 ? BigDecimal.ZERO : seconds.stripTrailingZeros();
+        return Objects.hash(months, seconds);
     }
 }

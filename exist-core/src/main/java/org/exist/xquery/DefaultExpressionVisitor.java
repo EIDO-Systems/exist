@@ -149,8 +149,8 @@ public class DefaultExpressionVisitor extends BasicExpressionVisitor {
     public void visitAttribConstructor(AttributeConstructor constructor) {
         for (final Iterator<Object> i = constructor.contentIterator(); i.hasNext(); ) {
             final Object next = i.next();
-            if (next instanceof Expression)
-                {((Expression)next).accept(this);}
+            if (next instanceof Expression expression)
+                {expression.accept(this);}
         }
     }
 
@@ -159,6 +159,40 @@ public class DefaultExpressionVisitor extends BasicExpressionVisitor {
         constructor.getNameExpr().accept(this);
         if (constructor.getContentExpr() != null)
             {constructor.getContentExpr().accept(this);}
+    }
+
+    @Override
+    public void visitGeneralComparison(GeneralComparison comparison) {
+        comparison.getLeft().accept(this);
+        comparison.getRight().accept(this);
+    }
+
+    @Override
+    public void visitAndExpr(OpAnd and) {
+        and.getLeft().accept(this);
+        and.getRight().accept(this);
+    }
+
+    @Override
+    public void visitOrExpr(OpOr or) {
+        or.getLeft().accept(this);
+        or.getRight().accept(this);
+    }
+
+    @Override
+    public void visitCastExpr(CastExpression expression) {
+        expression.getInnerExpression().accept(this);
+    }
+
+    @Override
+    public void visitFilteredExpr(FilteredExpression filtered) {
+        @Nullable final Expression expr = filtered.getExpression();
+        if (expr != null) {
+            expr.accept(this);
+        }
+        for (final Predicate pred : filtered.getPredicates()) {
+            pred.accept(this);
+        }
     }
 
     @Override

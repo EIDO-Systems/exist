@@ -44,7 +44,7 @@ public class FunContainsToken extends BasicFunction {
 
     private final static FunctionParameterSequenceType FS_INPUT = optManyParam("input", Type.STRING, "The input string");
     private final static FunctionParameterSequenceType FS_TOKEN = param("token", Type.STRING, "The token to be searched for");
-    private final static FunctionParameterSequenceType FS_COLLATION = param("pattern", Type.STRING, "Collation to use");
+    private final static FunctionParameterSequenceType FS_COLLATION = optParam("collation", Type.STRING, "Collation to use; an empty sequence selects the default collation");
 
     public final static FunctionSignature[] FS_CONTAINS_TOKEN = functionSignatures(
             FS_CONTAINS_TOKEN_NAME,
@@ -90,7 +90,7 @@ public class FunContainsToken extends BasicFunction {
         Collator collator = context.getDefaultCollator();
 
         if (args.length > 2 && !args[2].isEmpty()) {
-            collator = context.getCollator(args[2].getStringValue());
+            collator = context.getCollator(args[2].getStringValue(), ErrorCodes.FOCH0002);
         }
 
         /* return true only if some fragment matches the trimmed token under current collation */

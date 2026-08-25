@@ -79,7 +79,6 @@ import java.io.*;
 import java.net.URISyntaxException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.util.*;
 import java.util.Map.Entry;
 import java.util.regex.Matcher;
@@ -321,7 +320,7 @@ public class XQueryURLRewrite extends HttpServlet {
 
                     // store the original request URI to org.exist.forward.request-uri
                     modifiedRequest.setAttribute(RQ_ATTR_REQUEST_URI, request.getRequestURI());
-                    modifiedRequest.setAttribute(RQ_ATTR_SERVLET_PATH, request.getServletPath());
+                    modifiedRequest.setAttribute(RQ_ATTR_SERVLET_PATH, getServletPathSafely(request));
 
                 }
                 if (LOG.isTraceEnabled()) {
@@ -373,6 +372,29 @@ public class XQueryURLRewrite extends HttpServlet {
         }
     }
 
+    /**
+     * Under Jetty 12's EE10 servlet module, {@link HttpServletRequest#getServletPath()}
+     * throws {@code IllegalArgumentException} (surfaced to the client as a 400 response)
+     * when the request URI contains an ambiguous path segment (e.g. a real '/' next to
+     * an encoded '%2F'), even though {@link HttpServletRequest#getRequestURI()} on the
+     * very same request remains safe to call. This servlet is always mapped with
+     * {@code url-pattern} {@code /*} (see web.xml), a path-prefix mapping with an empty
+     * prefix, so per the Jakarta Servlet spec {@code getServletPath()} is defined to
+     * always return {@code ""} here regardless of the request URI -- Jetty's own
+     * ambiguity check is a blanket refusal to answer, not a sign the answer differs.
+     * Fall back to that known value instead of failing the whole request.
+     *
+     * @see <a href="https://github.com/jetty/jetty.project/issues/12346">jetty/jetty.project#12346</a>
+     */
+    static String getServletPathSafely(final HttpServletRequest request) {
+        try {
+            return request.getServletPath();
+        } catch (final IllegalArgumentException e) {
+            LOG.debug("Falling back to \"\" for servlet path of ambiguous request URI {}: {}", request.getRequestURI(), e.getMessage());
+            return "";
+        }
+    }
+
     BrokerPool getBrokerPool() {
         return pool;
     }
@@ -382,7 +404,6 @@ public class XQueryURLRewrite extends HttpServlet {
     }
 
     private void applyViews(final ModelAndView modelView, final List<URLRewrite> views, final HttpServletResponse response, final RequestWrapper modifiedRequest, final HttpServletResponse currentResponse) throws IOException, ServletException {
-        //int status;
         HttpServletResponse wrappedResponse = currentResponse;
         for (int i = 0; i < views.size(); i++) {
             final URLRewrite view = views.get(i);
@@ -456,6 +477,7 @@ public class XQueryURLRewrite extends HttpServlet {
 
     private void flushError(final HttpServletResponse response, final HttpServletResponse wrappedResponse) throws IOException {
         if (!response.isCommitted()) {
+            response.setStatus(wrappedResponse.getStatus());
             final byte[] data = ((CachingResponseWrapper) wrappedResponse).getData();
             if (data != null) {
                 response.setContentType(wrappedResponse.getContentType());
@@ -475,7 +497,7 @@ public class XQueryURLRewrite extends HttpServlet {
             return null;
         }
 
-        try (final DBBroker broker = pool.get(Optional.ofNullable(user))) {
+        try (@SuppressWarnings("PMD.UnusedLocalVariable") final DBBroker broker = pool.get(Optional.ofNullable(user))) {
 
             if (model.getSourceInfo().source instanceof DBSource) {
                 ((DBSource) model.getSourceInfo().source).validate(Permission.EXECUTE);
@@ -506,25 +528,27 @@ public class XQueryURLRewrite extends HttpServlet {
      * @param request the http request
      * @param response the http response
      */
-    private void doRewrite(URLRewrite action, RequestWrapper request, final HttpServletResponse response) throws IOException, ServletException {
-        if (action.getTarget() != null && !(action instanceof Redirect)) {
-            final String uri = action.resolve(request);
-            final URLRewrite staticRewrite = rewriteConfig.lookup(uri, request.getServerName(), true, action);
+    private void doRewrite(final URLRewrite action, final RequestWrapper request, final HttpServletResponse response) throws IOException, ServletException {
+        URLRewrite effectiveAction = action;
+        RequestWrapper effectiveRequest = request;
+        if (effectiveAction.getTarget() != null && !(effectiveAction instanceof Redirect)) {
+            final String uri = effectiveAction.resolve(effectiveRequest);
+            final URLRewrite staticRewrite = rewriteConfig.lookup(uri, effectiveRequest.getServerName(), true, effectiveAction);
 
             if (staticRewrite != null) {
-                staticRewrite.copyFrom(action);
-                action = staticRewrite;
-                final RequestWrapper modifiedRequest = new RequestWrapper(request);
-                modifiedRequest.setPaths(uri, action.getPrefix());
+                staticRewrite.copyFrom(effectiveAction);
+                effectiveAction = staticRewrite;
+                final RequestWrapper modifiedRequest = new RequestWrapper(effectiveRequest);
+                modifiedRequest.setPaths(uri, effectiveAction.getPrefix());
 
                 if (LOG.isTraceEnabled()) {
-                    LOG.trace("Forwarding to : {} url: {}", action.toString(), action.getURI());
+                    LOG.trace("Forwarding to : {} url: {}", effectiveAction.toString(), effectiveAction.getURI());
                 }
-                request = modifiedRequest;
+                effectiveRequest = modifiedRequest;
             }
         }
-        action.prepareRequest(request);
-        action.doRewrite(request, response);
+        effectiveAction.prepareRequest(effectiveRequest);
+        effectiveAction.doRewrite(effectiveRequest, response);
     }
 
     protected ServletConfig getConfig() {
@@ -543,6 +567,7 @@ public class XQueryURLRewrite extends HttpServlet {
         return rewrite;
     }
 
+    @SuppressWarnings("PMD.UnusedPrivateMethod") // called from switch expression in service()
     private void parseViews(final HttpServletRequest request, final Element view, final ModelAndView modelView) throws ServletException {
         Node node = view.getFirstChild();
         while (node != null) {
@@ -557,6 +582,7 @@ public class XQueryURLRewrite extends HttpServlet {
         }
     }
 
+    @SuppressWarnings("PMD.UnusedPrivateMethod") // called from switch expression in service()
     private void parseErrorHandlers(final HttpServletRequest request, final Element view, final ModelAndView modelView) throws ServletException {
         Node node = view.getFirstChild();
         while (node != null) {
@@ -577,7 +603,7 @@ public class XQueryURLRewrite extends HttpServlet {
         }
         try {
             final Class<?> driver = Class.forName(DRIVER);
-            final Database database = (Database) driver.newInstance();
+            final Database database = (Database) driver.getDeclaredConstructor().newInstance();
             database.setProperty("create-database", "true");
             DatabaseManager.registerDatabase(database);
             if (LOG.isDebugEnabled()) {
@@ -685,28 +711,30 @@ public class XQueryURLRewrite extends HttpServlet {
         }
     }
 
-    String adjustPathForSourceLookup(final String basePath, String path) {
+    String adjustPathForSourceLookup(final String basePath, final String path) {
         if (LOG.isTraceEnabled()) {
             LOG.trace("request path={}", path);
         }
 
-        if (basePath.startsWith(XmldbURI.EMBEDDED_SERVER_URI_PREFIX) && path.startsWith(basePath.replace(XmldbURI.EMBEDDED_SERVER_URI_PREFIX, ""))) {
-            path = path.replace(basePath.replace(XmldbURI.EMBEDDED_SERVER_URI_PREFIX, ""), "");
+        String adjustedPath = path;
+        if (basePath.startsWith(XmldbURI.EMBEDDED_SERVER_URI_PREFIX) && adjustedPath.startsWith(basePath.replace(XmldbURI.EMBEDDED_SERVER_URI_PREFIX, ""))) {
+            adjustedPath = adjustedPath.replace(basePath.replace(XmldbURI.EMBEDDED_SERVER_URI_PREFIX, ""), "");
 
-        } else if (path.startsWith("/db/")) {
-            path = path.substring(4);
+        } else if (adjustedPath.startsWith("/db/")) {
+            adjustedPath = adjustedPath.substring(4);
         }
 
-        if (path.startsWith("/")) {
-            path = path.substring(1);
+        if (adjustedPath.startsWith("/")) {
+            adjustedPath = adjustedPath.substring(1);
         }
 
         if (LOG.isTraceEnabled()) {
-            LOG.trace("adjusted request path={}", path);
+            LOG.trace("adjusted request path={}", adjustedPath);
         }
-        return path;
+        return adjustedPath;
     }
 
+    @SuppressWarnings("PMD.UnusedPrivateMethod") // called indirectly from getSourceInfo()
     private SourceInfo findSource(final HttpServletRequest request, final DBBroker broker, final String basePath) {
         if (LOG.isTraceEnabled()) {
             LOG.trace("basePath={}", basePath);
@@ -833,9 +861,16 @@ public class XQueryURLRewrite extends HttpServlet {
         return findDbControllerXql(broker, collectionUri, subResourceUri);
     }
 
-    private SourceInfo findSourceFromFs(final String basePath, final String[] components) {
+    // package-private rather than private so it is directly testable without reflection
+    SourceInfo findSourceFromFs(final String basePath, final String[] components) {
         final String realPath = config.getServletContext().getRealPath(basePath);
-        final Path baseDir = Paths.get(realPath);
+        // the Servlet API permits getRealPath() to return null when the container cannot map
+        // basePath to a location on disk; there is no filesystem controller to find.
+        if (realPath == null) {
+            LOG.warn("Base path for XQueryURLRewrite does not point to a directory");
+            return null;
+        }
+        final Path baseDir = Path.of(realPath);
         if (!Files.isDirectory(baseDir)) {
             LOG.warn("Base path for XQueryURLRewrite does not point to a directory");
             return null;
@@ -929,7 +964,11 @@ public class XQueryURLRewrite extends HttpServlet {
     }
 
     private void declareVariables(final XQueryContext context, final SourceInfo sourceInfo, final URLRewrite staticRewrite, final String basePath, final RequestWrapper request, final HttpServletResponse response) throws XPathException {
-        final HttpRequestWrapper reqw = new HttpRequestWrapper(request, UTF_8.name(), UTF_8.name(), false);
+        // parseMultipart=true so that multipart/form-data uploads (including file parts)
+        // are exposed to controllers and RESTXQ resource functions for every HTTP method,
+        // not only POST. See https://github.com/eXist-db/exist/issues/6580 and
+        // https://github.com/eXist-db/exist/issues/6578
+        final HttpRequestWrapper reqw = new HttpRequestWrapper(request, UTF_8.name(), UTF_8.name(), true);
         final HttpResponseWrapper respw = new HttpResponseWrapper(response);
         // context.declareNamespace(RequestModule.PREFIX,
         // RequestModule.NAMESPACE_URI);
@@ -976,9 +1015,6 @@ public class XQueryURLRewrite extends HttpServlet {
         private List<URLRewrite> errorHandlers = null;
         private boolean useCache = false;
         private SourceInfo sourceInfo = null;
-
-        private ModelAndView() {
-        }
 
         public void setSourceInfo(final SourceInfo sourceInfo) {
             this.sourceInfo = sourceInfo;
@@ -1171,20 +1207,15 @@ public class XQueryURLRewrite extends HttpServlet {
         public String getPathTranslated() {
             final String pathInfo = getPathInfo();
             if (pathInfo == null) {
-                super.getPathTranslated();
-            }
-            if (pathInfo == null) {
-                return (null);
+                return super.getPathTranslated();
             }
             return super.getSession().getServletContext().getRealPath(pathInfo);
         }
 
-        protected void setData(@Nullable byte[] data) {
-            if (data == null) {
-                data = new byte[0];
-            }
-            contentLength = data.length;
-            sis = new CachingServletInputStream(data);
+        protected void setData(@Nullable final byte[] data) {
+            final byte[] effectiveData = data == null ? new byte[0] : data;
+            contentLength = effectiveData.length;
+            sis = new CachingServletInputStream(effectiveData);
         }
 
         public void addParameter(final String name, final String value) {
@@ -1283,15 +1314,14 @@ public class XQueryURLRewrite extends HttpServlet {
         }
 
         @Override
-        public String getHeader(final String s) {
-            if ("If-Modified-Since".equals(s) && !allowCaching) {
-                return null;
-            }
-            return super.getHeader(s);
-        }
-
-        @Override
         public long getDateHeader(final String s) {
+            // When a view is applied, allowCaching is false and we hide If-Modified-Since from the
+            // conditional-GET check (RESTServer reads it via getDateHeader): a view may have changed
+            // even when the underlying resource has not, so answering with a 304 based on the
+            // resource's timestamp would wrongly suppress the re-render. We suppress ONLY this
+            // date-header form used by that check, and deliberately do NOT override getHeader(), so
+            // application code can still read the raw If-Modified-Since value via request:get-header().
+            // See https://github.com/eXist-db/exist/issues/6603
             if ("If-Modified-Since".equals(s) && !allowCaching) {
                 return -1;
             }
@@ -1380,11 +1410,6 @@ public class XQueryURLRewrite extends HttpServlet {
             super.setStatus(i);
         }
 
-        @Override
-        public void setStatus(final int i, final String msg) {
-            this.status = i;
-            super.setStatus(i, msg);
-        }
 
         @Override
         public void sendError(final int i, final String msg) throws IOException {
@@ -1413,10 +1438,8 @@ public class XQueryURLRewrite extends HttpServlet {
         }
 
         public void flush() throws IOException {
-            if (cache) {
-                if (contentType != null) {
-                    super.setContentType(contentType);
-                }
+            if (cache && contentType != null) {
+                super.setContentType(contentType);
             }
             if (sos != null) {
                 final ServletOutputStream out = super.getOutputStream();

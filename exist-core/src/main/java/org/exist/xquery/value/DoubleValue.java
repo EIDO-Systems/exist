@@ -22,9 +22,9 @@
 package org.exist.xquery.value;
 
 import com.ibm.icu.text.Collator;
-import net.sf.saxon.tree.util.FastStringBuffer;
-import net.sf.saxon.value.FloatingPointConverter;
+
 import org.exist.util.ByteConversion;
+import org.exist.util.SaxonConversions;
 import org.exist.xquery.Constants;
 import org.exist.xquery.ErrorCodes;
 import org.exist.xquery.Expression;
@@ -74,11 +74,12 @@ public class DoubleValue extends NumericValue {
     public DoubleValue(final Expression expression, final String stringValue) throws XPathException {
         super(expression);
         try {
-            value = switch (stringValue) {
-                case "INF" -> Double.POSITIVE_INFINITY;
+            final String trimmed = stringValue.strip();
+            value = switch (trimmed) {
+                case "INF", "+INF" -> Double.POSITIVE_INFINITY;
                 case "-INF" -> Double.NEGATIVE_INFINITY;
                 case "NaN" -> Double.NaN;
-                default -> Double.parseDouble(stringValue);
+                default -> Double.parseDouble(trimmed);
             };
         } catch (final NumberFormatException e) {
             throw new XPathException(getExpression(), ErrorCodes.FORG0001,
@@ -93,10 +94,7 @@ public class DoubleValue extends NumericValue {
 
     @Override
     public String getStringValue() {
-        final FastStringBuffer sb = new FastStringBuffer(20);
-        //0 is a dummy parameter
-        FloatingPointConverter.appendDouble(sb, value, false);
-        return sb.toString();
+        return SaxonConversions.doubleToString(value);
     }
 
     public double getValue() {
@@ -195,31 +193,34 @@ public class DoubleValue extends NumericValue {
 
     public DecimalValue toDecimalValue() throws XPathException {
         if (isNaN() || isInfinite()) {
-            throw conversionError(Type.DECIMAL);
+            throw conversionError(ErrorCodes.FOCA0002, Type.DECIMAL);
         }
         return new DecimalValue(getExpression(), BigDecimal.valueOf(value));
     }
 
     public IntegerValue toIntegerValue() throws XPathException {
         if (isNaN() || isInfinite()) {
-            throw conversionError(Type.INTEGER);
+            throw conversionError(ErrorCodes.FOCA0002, Type.INTEGER);
         }
-        return new IntegerValue(getExpression(), (long) value);
+        // Use BigDecimal to avoid silent long overflow for large doubles like 99e100
+        return new IntegerValue(getExpression(), BigDecimal.valueOf(value).toBigInteger());
     }
 
     public IntegerValue toIntegerSubType(final int subType) throws XPathException {
         if (isNaN() || isInfinite()) {
-            throw conversionError(subType);
+            throw conversionError(ErrorCodes.FOCA0002, subType);
         }
-        if (subType != Type.INTEGER && value > Integer.MAX_VALUE) {
-            throw new XPathException(getExpression(), ErrorCodes.FOCA0003, "Value is out of range for type "
-                    + Type.getTypeName(subType));
-        }
-        return new IntegerValue(getExpression(), (long) value, subType);
+        // Use BigDecimal to avoid silent long overflow for large doubles
+        final java.math.BigInteger bigVal = BigDecimal.valueOf(value).toBigInteger();
+        return new IntegerValue(getExpression(), bigVal, subType);
     }
 
     private XPathException conversionError(final int type) {
-        return new XPathException(getExpression(), ErrorCodes.FORG0001, "Cannot convert "
+        return conversionError(ErrorCodes.FORG0001, type);
+    }
+
+    private XPathException conversionError(final ErrorCodes.ErrorCode errorCode, final int type) {
+        return new XPathException(getExpression(), errorCode, "Cannot convert "
                 + Type.getTypeName(getType()) + "('" + getStringValue() + "') to "
                 + Type.getTypeName(type));
     }
@@ -488,11 +489,6 @@ public class DoubleValue extends NumericValue {
             return Double.compare(value, ((DoubleValue) other).value);
         }
         return getType() < other.getType() ? Constants.INFERIOR : Constants.SUPERIOR;
-    }
-
-    @Override
-    public int hashCode() {
-        return Double.valueOf(value).hashCode();
     }
 
     /**

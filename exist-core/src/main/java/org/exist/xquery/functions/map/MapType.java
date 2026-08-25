@@ -64,8 +64,16 @@ public class MapType extends AbstractMapType {
      * The type of the keys in the map,
      * if not all keys have the same type
      * then this is set to {@link #MIXED_KEY_TYPES}.
-     *
+     * <p>
      * Uses integer values from {@link org.exist.xquery.value.Type}.
+     * <p>
+     * This is reported via {@link #getKeyType()} but does NOT take part in key
+     * comparison. Lookups ({@link #get(AtomicValue)} / {@link #contains(AtomicValue)})
+     * delegate directly to the underlying map, whose comparator implements
+     * {@code op:same-key} (see {@link AbstractMapType#sameKey}). Keys are compared
+     * by their op:same-key family, never coerced to {@code keyType} - a key from a
+     * different family that shares a lexical value (e.g. the string {@code "12"}
+     * and the integer {@code 12}) is correctly treated as distinct.
      */
     private int keyType = UNKNOWN_KEY_TYPE;
 
@@ -75,7 +83,7 @@ public class MapType extends AbstractMapType {
 
     /**
      * Construct a new Bifurcan mutable-map for use with AtomicValue keys.
-     * 
+     * <p>
      * This function is predominantly for pre-building a Map of key/values
      * for passing to {@link #MapType(XQueryContext, IMap, Integer)}.
      *
@@ -162,8 +170,8 @@ public class MapType extends AbstractMapType {
     public void add(final AbstractMapType other) {
         setKeyType(other.key() != null ? other.key().getType() : UNKNOWN_KEY_TYPE);
 
-        if(other instanceof MapType) {
-            map = map.union(((MapType)other).map);
+        if(other instanceof MapType type) {
+            map = map.union(type.map);
         } else {
 
             // create a transient map
@@ -251,14 +259,8 @@ public class MapType extends AbstractMapType {
     }
 
     @Override
-    public Sequence get(AtomicValue key) {
-        key = convert(key);
-        if (key == null) {
-            return Sequence.EMPTY_SEQUENCE;
-        }
-
-        final Sequence result = map.get(key, null);
-        return result == null ? Sequence.EMPTY_SEQUENCE : result;
+    public Sequence get(final AtomicValue key) {
+        return map.get(key, Sequence.EMPTY_SEQUENCE);
     }
 
     @Override
@@ -268,12 +270,7 @@ public class MapType extends AbstractMapType {
     }
 
     @Override
-    public boolean contains(AtomicValue key) {
-        key = convert(key);
-        if (key == null) {
-            return false;
-        }
-
+    public boolean contains(final AtomicValue key) {
         return map.contains(key);
     }
 
@@ -374,17 +371,6 @@ public class MapType extends AbstractMapType {
                 break; // done, we only have to detect this once!
             }
         }
-    }
-
-    private AtomicValue convert(final AtomicValue key) {
-        if (keyType != UNKNOWN_KEY_TYPE && keyType != MIXED_KEY_TYPES) {
-            try {
-                return key.convertTo(keyType);
-            } catch (final XPathException e) {
-                return null;
-            }
-        }
-        return key;
     }
 
     @Override

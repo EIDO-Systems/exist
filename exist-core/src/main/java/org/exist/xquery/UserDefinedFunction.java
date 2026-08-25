@@ -28,7 +28,9 @@ import org.exist.xquery.value.Item;
 import org.exist.xquery.value.Sequence;
 
 import java.util.ArrayList;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Set;
 
 /**
  * @author wolf
@@ -36,6 +38,7 @@ import java.util.List;
 public class UserDefinedFunction extends Function implements Cloneable {
 
     private final List<QName> parameters = new ArrayList<>(5);
+    private final Set<QName> parameterNames = new HashSet<>();
     protected boolean visited = false;
     private Expression body;
     private Sequence[] currentArguments = null;
@@ -44,6 +47,18 @@ public class UserDefinedFunction extends Function implements Cloneable {
     private FunctionCall call;
     private boolean hasBeenReset = false;
     private List<ClosureVariable> closureVariables = null;
+
+    // When true, propagate the caller's focus (context sequence + item) to the
+    // body. Set by FunctionFactory.wrap so that named-function-reference and
+    // fn:function-lookup wrappers around context-dependent built-ins
+    // (fn:node-name#0, fn:string#0, fn:position#0, fn:lang#1, ...) can see a
+    // focus. Plain user-defined functions are not supposed to depend on the
+    // caller's focus, so this flag stays false for them. See F&O 3.1 §16.1.1.
+    private boolean propagateContextToBody = false;
+
+    public void setPropagateContextToBody(final boolean propagateContextToBody) {
+        this.propagateContextToBody = propagateContextToBody;
+    }
 
     public UserDefinedFunction(XQueryContext context, FunctionSignature signature) {
         super(context, signature);
@@ -67,7 +82,7 @@ public class UserDefinedFunction extends Function implements Cloneable {
     }
 
     public void addVariable(QName varName) throws XPathException {
-        if (parameters.contains(varName)) {
+        if (!parameterNames.add(varName)) {
             throw new XPathException(this, ErrorCodes.XQST0039, "function " + getName() + " already has a parameter with the name " + varName);
         }
 
@@ -152,7 +167,11 @@ public class UserDefinedFunction extends Function implements Cloneable {
                             ", got " + currentArguments[j].getItemCount());
                 }
             }
-            result = body.eval(null, null);
+            if (propagateContextToBody) {
+                result = body.eval(contextSequence, contextItem);
+            } else {
+                result = body.eval(null, null);
+            }
             return result;
         } finally {
             // restore the local variable stack

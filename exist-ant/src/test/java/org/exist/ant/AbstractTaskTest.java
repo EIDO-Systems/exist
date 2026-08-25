@@ -32,7 +32,6 @@ import javax.annotation.Nullable;
 import java.net.URISyntaxException;
 import java.net.URL;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 import static org.junit.Assert.assertNotNull;
 
@@ -54,9 +53,8 @@ public abstract class AbstractTaskTest {
         final URL buildFileUrl = getBuildFile();
         assertNotNull(buildFileUrl);
 
-        final Path buildFile = Paths.get(buildFileUrl.toURI());
+        final Path buildFile = Path.of(buildFileUrl.toURI());
         buildFileRule.configureProject(buildFile.toAbsolutePath().toString());
-        final Path path = Paths.get(getClass().getResource("user.xml").toURI());
         final Project project = buildFileRule.getProject();
         project.setProperty(PROP_ANT_ADMIN_USER, TestUtils.ADMIN_DB_USER);
         project.setProperty(PROP_ANT_ADMIN_PASSWORD, TestUtils.ADMIN_DB_PWD);

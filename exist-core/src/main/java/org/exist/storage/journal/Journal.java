@@ -423,7 +423,10 @@ public final class Journal implements Closeable {
                 sync();
                 lastSyncLsn = currentLsn;
             }
-        } catch (final IOException e) {
+        } catch (final Exception e) {
+            // In some edge cases (e.g. during startup or after errors), the underlying FileChannel
+            // implementation may be in a broken state and throw a RuntimeException (such as NPE)
+            // from force(). Log and continue instead of bringing the whole instance down.
             LOG.error("Could not sync Journal to disk: {}", e.getMessage(), e);
         }
 
@@ -437,6 +440,10 @@ public final class Journal implements Closeable {
     }
 
     private void sync() throws IOException {
+        if (channel == null) {
+            // Journal has not been fully initialised or is already closed; nothing to sync.
+            return;
+        }
         channel.force(true);
     }
 
@@ -451,7 +458,6 @@ public final class Journal implements Closeable {
         try {
             if (currentBuffer.position() > 0) {
                 currentBuffer.flip();
-                final int size = currentBuffer.remaining();
                 while (currentBuffer.hasRemaining()) {
                     channel.write(currentBuffer);
                 }
@@ -774,7 +780,7 @@ public final class Journal implements Closeable {
         if (fileNum < 0) {
             throw new IllegalArgumentException("File Number: " + fileNum + " is out of range (0-" + Short.MAX_VALUE + ")");
         }
-        return String.format("%010x", fileNum) + '.' + LOG_FILE_SUFFIX;
+        return "%010x".formatted(fileNum) + '.' + LOG_FILE_SUFFIX;
     }
 
     private static class RemoveRunnable implements Runnable {

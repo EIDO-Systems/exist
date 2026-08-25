@@ -189,7 +189,7 @@ public class ConsistencyCheck {
      *
      * @param progress progress callback
      * @return a list of {@link ErrorReport} instances describing the errors found
-     * @throws TerminatedException DOCUMENT ME!
+     * @throws TerminatedException if the process is terminated.
      */
     public List<ErrorReport> checkDocuments(final ProgressCallback progress) throws TerminatedException {
         final List<ErrorReport> errors = new ArrayList<>();
@@ -203,7 +203,7 @@ public class ConsistencyCheck {
      *
      * @param progress  progress callback
      * @param errorList error reports will be added to this list, using instances of class {@link ErrorReport}.
-     * @throws TerminatedException DOCUMENT ME!
+     * @throws TerminatedException if the process is terminated.
      */
     public void checkDocuments(final ProgressCallback progress, final List<ErrorReport> errorList)
             throws TerminatedException {
@@ -579,8 +579,8 @@ public class ConsistencyCheck {
                     }
                 }
                 if (report != null) {
-                    if (report instanceof ErrorReport.ResourceError) {
-                        ((ErrorReport.ResourceError) report).setDocumentId(doc.getDocId());
+                    if (report instanceof ErrorReport.ResourceError error) {
+                        error.setDocumentId(doc.getDocId());
                     }
 
                     if (errors != null) {

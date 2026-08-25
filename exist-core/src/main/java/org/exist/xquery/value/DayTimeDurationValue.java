@@ -21,8 +21,6 @@
  */
 package org.exist.xquery.value;
 
-import net.sf.saxon.tree.util.FastStringBuffer;
-import net.sf.saxon.value.FloatingPointConverter;
 import org.exist.xquery.ErrorCodes;
 import org.exist.xquery.Expression;
 import org.exist.xquery.XPathException;
@@ -74,6 +72,7 @@ public class DayTimeDurationValue extends OrderedDurationValue {
 
     private static Duration createDurationDayTime(String str, final Expression expression) throws XPathException {
         try {
+            DurationValue.validateDurationDecimal(str);
             return TimeUtils.getInstance().newDurationDayTime(str);
         } catch (final IllegalArgumentException e) {
             throw new XPathException(expression, ErrorCodes.FORG0001, "cannot construct " + Type.getTypeName(Type.DAY_TIME_DURATION) +
@@ -118,7 +117,7 @@ public class DayTimeDurationValue extends OrderedDurationValue {
         }
 
         //Copied from Saxon 8.6.1
-        final FastStringBuffer sb = new FastStringBuffer(32);
+        final StringBuilder sb = new StringBuilder(32);
         if (canonicalDuration.getSign() < 0) {
             sb.append('-');
         }
@@ -136,38 +135,10 @@ public class DayTimeDurationValue extends OrderedDurationValue {
             sb.append(m + "M");
         }
         if ((s.intValue() != 0) || (d == 0 && m == 0 && h == 0)) {
-            //TODO : ugly -> factorize
-            //sb.append(Integer.toString(s.intValue()));
-            //double ms = s.doubleValue() - s.intValue();
-            //if (ms != 0.0) {
-            //	sb.append(".");
-            //	sb.append(Double.toString(ms).substring(2));
-            //}
-            //0 is a dummy parameter
-            FloatingPointConverter.appendFloat(sb, s.floatValue(), false);
+            sb.append(net.sf.saxon.value.FloatValue.floatToString(s.floatValue()));
             sb.append("S");
-            /*
-            if (micros == 0) {
-                sb.append(s + "S");
-            } else {
-                long ms = (s * 1000000) + micros;
-                String mss = ms + "";
-                if (s == 0) {
-                    mss = "0000000" + mss;
-                    mss = mss.substring(mss.length()-7);
-                }
-                sb.append(mss.substring(0, mss.length()-6));
-                sb.append('.');
-                int lastSigDigit = mss.length()-1;
-                while (mss.charAt(lastSigDigit) == '0') {
-                    lastSigDigit--;
-                }
-                sb.append(mss.substring(mss.length()-6, lastSigDigit+1));
-                sb.append('S');
-            }
-            */
         }
-        //End of copy        
+        //End of copy
         return sb.toString();
 
     }
@@ -216,7 +187,7 @@ public class DayTimeDurationValue extends OrderedDurationValue {
 		try {
 			return super.plus(other);
 		} catch (IllegalArgumentException e) {
-				throw new XPathException(getExpression(), "Operand to plus should be of type xdt:dayTimeDuration, xs:time, " +
+				throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "Operand to plus should be of type xdt:dayTimeDuration, xs:time, " +
 					"xs:date or xs:dateTime; got: " +
 					Type.getTypeName(other.getType()));
 		}
@@ -224,42 +195,45 @@ public class DayTimeDurationValue extends OrderedDurationValue {
 	*/
 
     public ComputableValue mult(ComputableValue other) throws XPathException {
-        if (other instanceof NumericValue) {
+        if (other instanceof NumericValue value) {
             //If $arg2 is NaN an error is raised [err:FOCA0005]
-            if (((NumericValue) other).isNaN()) {
+            if (value.isNaN()) {
                 throw new XPathException(getExpression(), ErrorCodes.FOCA0005, "Operand is not a number");
             }
             //If $arg2 is positive or negative infinity, the result overflows
-            if (((NumericValue) other).isInfinite()) {
+            if (value.isInfinite()) {
                 throw new XPathException(getExpression(), ErrorCodes.FODT0002, "Multiplication by infinity overflow");
             }
         }
         final BigDecimal factor = numberToBigDecimal(other, "Operand to mult should be of numeric type; got: ");
         final boolean isFactorNegative = factor.signum() < 0;
         final DayTimeDurationValue product = new DayTimeDurationValue(getExpression(), duration.multiply(factor.abs()));
-        if (isFactorNegative) {
-            return new DayTimeDurationValue(getExpression(), product.negate().getCanonicalDuration());
-        }
-        return new DayTimeDurationValue(getExpression(), product.getCanonicalDuration());
-
+        final DayTimeDurationValue result = isFactorNegative
+                ? new DayTimeDurationValue(getExpression(), product.negate().getCanonicalDuration())
+                : new DayTimeDurationValue(getExpression(), product.getCanonicalDuration());
+        result.checkDayTimeOverflow(result.secondsValueSigned());
+        return result;
     }
 
     public ComputableValue div(ComputableValue other) throws XPathException {
         if (other.getType() == Type.DAY_TIME_DURATION) {
-            final DecimalValue a = new DecimalValue(getExpression(), secondsValueSigned());
-            final DecimalValue b = new DecimalValue(getExpression(), ((DayTimeDurationValue) other).secondsValueSigned());
-            return new DecimalValue(getExpression(), a.value.divide(b.value, 20, RoundingMode.HALF_UP));
+            final BigDecimal aSeconds = secondsValueSigned();
+            final BigDecimal bSeconds = ((DayTimeDurationValue) other).secondsValueSigned();
+            // Operand magnitudes outside the supported value space raise FODT0002 / FOAR0002.
+            checkDayTimeOverflow(aSeconds);
+            checkDayTimeOverflow(bSeconds);
+            return new DecimalValue(getExpression(), aSeconds.divide(bSeconds, 20, RoundingMode.HALF_UP));
         }
-        if (other instanceof NumericValue) {
-            if (((NumericValue) other).isNaN()) {
+        if (other instanceof NumericValue value) {
+            if (value.isNaN()) {
                 throw new XPathException(getExpression(), ErrorCodes.FOCA0005, "Operand is not a number");
             }
             //If $arg2 is positive or negative infinity, the result is a zero-length duration
-            if (((NumericValue) other).isInfinite()) {
+            if (value.isInfinite()) {
                 return new DayTimeDurationValue(getExpression(), "PT0S");
             }
             //If $arg2 is positive or negative zero, the result overflows and is handled as discussed in 10.1.1 Limits and Precision
-            if (((NumericValue) other).isZero()) {
+            if (value.isZero()) {
                 throw new XPathException(getExpression(), ErrorCodes.FODT0002, "Division by zero");
             }
         }
@@ -267,10 +241,11 @@ public class DayTimeDurationValue extends OrderedDurationValue {
         final boolean isDivisorNegative = divisor.signum() < 0;
         final BigDecimal secondsValueSigned = secondsValueSigned();
         final DayTimeDurationValue quotient = fromDecimalSeconds(secondsValueSigned.divide(divisor.abs(), Math.max(Math.max(3, secondsValueSigned.scale()), divisor.scale()), RoundingMode.HALF_UP));
-        if (isDivisorNegative) {
-            return new DayTimeDurationValue(getExpression(), quotient.negate().getCanonicalDuration());
-        }
-        return new DayTimeDurationValue(getExpression(), quotient.getCanonicalDuration());
+        final DayTimeDurationValue result = isDivisorNegative
+                ? new DayTimeDurationValue(getExpression(), quotient.negate().getCanonicalDuration())
+                : new DayTimeDurationValue(getExpression(), quotient.getCanonicalDuration());
+        result.checkDayTimeOverflow(result.secondsValueSigned());
+        return result;
     }
 
     private DayTimeDurationValue fromDecimalSeconds(BigDecimal x) throws XPathException {

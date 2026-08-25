@@ -47,28 +47,60 @@ abstract class OrderedDurationValue extends DurationValue {
     }
 
     @Override
-    public boolean compareTo(Collator collator, Comparison operator, AtomicValue other) throws XPathException {
+    public boolean compareTo(final Collator collator, final Comparison operator, final AtomicValue other)
+            throws XPathException {
         if (other.isEmpty()) {
             return false;
         }
-        final int r = compareTo(collator, other);
-        if (operator != Comparison.EQ && operator != Comparison.NEQ) {
-            if (getType() == Type.DURATION) {
-                throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
-                        "cannot compare unordered " + Type.getTypeName(getType()) + " to "
-                                + Type.getTypeName(other.getType()));
-            }
-            if (other.getType() == Type.DURATION) {
-                throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
-                        "cannot compare " + Type.getTypeName(getType()) + " to unordered "
-                                + Type.getTypeName(other.getType()));
-            }
-            if (Type.getCommonSuperType(getType(), other.getType()) == Type.DURATION) {
-                throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
-                        "cannot compare " + Type.getTypeName(getType()) + " to "
-                                + Type.getTypeName(other.getType()));
-            }
+        final Boolean mixedSubtypeResult = compareMixedSubtypes(operator, other);
+        if (mixedSubtypeResult != null) {
+            return mixedSubtypeResult;
         }
+        validateOrderingComparable(operator, other);
+        return resultMatchesOperator(compareTo(collator, other), operator);
+    }
+
+    /**
+     * Mixed duration subtypes (e.g., xs:yearMonthDuration vs xs:dayTimeDuration):
+     * equality comparisons return false (they can never be equal);
+     * ordering operators (lt/gt/le/ge) are not defined and raise XPTY0004.
+     * Returns null when the subtypes are not mixed and the caller should
+     * continue with normal comparison.
+     */
+    private Boolean compareMixedSubtypes(final Comparison operator, final AtomicValue other) throws XPathException {
+        if (!Type.subTypeOf(other.getType(), Type.DURATION)
+                || getType() == other.getType()
+                || getType() == Type.DURATION
+                || other.getType() == Type.DURATION) {
+            return null;
+        }
+        return switch (operator) {
+            case EQ -> Boolean.FALSE;
+            case NEQ -> Boolean.TRUE;
+            default -> throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
+                    "cannot compare " + Type.getTypeName(getType()) + " to "
+                            + Type.getTypeName(other.getType()));
+        };
+    }
+
+    /** Ordering operators (LT/GT/LTEQ/GTEQ) are not defined for unordered xs:duration. */
+    private void validateOrderingComparable(final Comparison operator, final AtomicValue other) throws XPathException {
+        if (operator == Comparison.EQ || operator == Comparison.NEQ) {
+            return;
+        }
+        if (getType() == Type.DURATION) {
+            throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
+                    "cannot compare unordered " + Type.getTypeName(getType()) + " to "
+                            + Type.getTypeName(other.getType()));
+        }
+        if (other.getType() == Type.DURATION) {
+            throw new XPathException(getExpression(), ErrorCodes.XPTY0004,
+                    "cannot compare " + Type.getTypeName(getType()) + " to unordered "
+                            + Type.getTypeName(other.getType()));
+        }
+    }
+
+    private boolean resultMatchesOperator(final int r, final Comparison operator) throws XPathException {
         return switch (operator) {
             case EQ -> r == DatatypeConstants.EQUAL;
             case NEQ -> r != DatatypeConstants.EQUAL;
@@ -100,7 +132,8 @@ abstract class OrderedDurationValue extends DurationValue {
                         Constants.INFERIOR : Constants.SUPERIOR;
             }
             if (r == DatatypeConstants.INDETERMINATE) {
-                throw new RuntimeException("indeterminate order between totally ordered duration values " + this + " and " + other);
+                throw new IllegalStateException(
+                        "indeterminate order between totally ordered duration values " + this + " and " + other);
             }
             return r;
         }
@@ -124,95 +157,86 @@ abstract class OrderedDurationValue extends DurationValue {
     }
 
     public ComputableValue plus(ComputableValue other) throws XPathException {
-        switch (other.getType()) {
-            case Type.DAY_TIME_DURATION: {
-                //if (getType() != other.getType()) throw new IllegalArgumentException();	// not a match after all
+        return switch (other.getType()) {
+            case Type.DAY_TIME_DURATION -> {
                 final Duration a = getCanonicalDuration();
                 final Duration b = ((OrderedDurationValue) other).getCanonicalDuration();
                 final Duration result = createSameKind(a.add(b)).getCanonicalDuration();
-                //TODO : move instantiation to the right place
-                return new DayTimeDurationValue(getExpression(), result);
+                final DayTimeDurationValue sum = new DayTimeDurationValue(getExpression(), result);
+                sum.checkDayTimeOverflow(sum.secondsValueSigned());
+                yield sum;
             }
-            case Type.YEAR_MONTH_DURATION: {
-                //if (getType() != other.getType()) throw new IllegalArgumentException();	// not a match after all
+            case Type.YEAR_MONTH_DURATION -> {
                 final Duration a = getCanonicalDuration();
                 final Duration b = ((OrderedDurationValue) other).getCanonicalDuration();
                 final Duration result = createSameKind(a.add(b)).getCanonicalDuration();
-                //TODO : move instantiation to the right place
-                return new YearMonthDurationValue(getExpression(), result);
+                final YearMonthDurationValue sum = new YearMonthDurationValue(getExpression(), result);
+                sum.checkYearMonthOverflow(sum.monthsValueSigned());
+                yield sum;
             }
-            case Type.DURATION: {
-                //if (getType() != other.getType()) throw new IllegalArgumentException();	// not a match after all
+            case Type.DURATION -> {
                 final Duration a = getCanonicalDuration();
                 final Duration b = ((DurationValue) other).getCanonicalDuration();
                 final Duration result = createSameKind(a.add(b)).getCanonicalDuration();
-                //TODO : move instantiation to the right place
-                return new DurationValue(getExpression(), result);
+                yield new DurationValue(getExpression(), result);
             }
-            case Type.TIME:
-            case Type.DATE_TIME:
-            case Type.DATE_TIME_STAMP:
-            case Type.DATE:
-                final AbstractDateTimeValue date = (AbstractDateTimeValue) other;
-                final XMLGregorianCalendar gc = (XMLGregorianCalendar) date.calendar.clone();
-                gc.add(duration);
-                //Shift one year
-                if (gc.getYear() < 0) {
-                    gc.setYear(gc.getYear() - 1);
-                }
-                return date.createSameKind(gc);
-            default:
-                throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "cannot add " +
-                        Type.getTypeName(other.getType()) + "('" + other.getStringValue() + "') from " +
-                        Type.getTypeName(getType()) + "('" + getStringValue() + "')");
+            case Type.TIME, Type.DATE_TIME, Type.DATE_TIME_STAMP, Type.DATE ->
+                    addDurationToDate((AbstractDateTimeValue) other);
+            default -> throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "cannot add " +
+                    Type.getTypeName(other.getType()) + "('" + other.getStringValue() + "') from " +
+                    Type.getTypeName(getType()) + "('" + getStringValue() + "')");
+        };
+    }
+
+    private ComputableValue addDurationToDate(AbstractDateTimeValue date) throws XPathException {
+        date.checkYearOverflow(date.calendar);
+        checkDateArithMagnitude(secondsValueSigned());
+        final XMLGregorianCalendar gc = (XMLGregorianCalendar) date.calendar.clone();
+        gc.add(duration);
+        // For xs:time the year/month/day are FIELD_UNDEFINED; the legacy
+        // BC-year shift below must not run, since FIELD_UNDEFINED is
+        // Integer.MIN_VALUE and setYear(MIN_VALUE - 1) would int-overflow
+        // to MAX_VALUE, falsely tripping the eon overflow check.
+        final int gcYear = gc.getYear();
+        if (gcYear != DatatypeConstants.FIELD_UNDEFINED && gcYear < 0) {
+            gc.setYear(gcYear - 1);
         }
+        date.checkYearOverflow(gc);
+        return date.createSameKind(gc);
     }
 
     public ComputableValue minus(ComputableValue other) throws XPathException {
-        switch (other.getType()) {
-            case Type.DAY_TIME_DURATION: {
+        return switch (other.getType()) {
+            case Type.DAY_TIME_DURATION -> {
                 if (getType() != other.getType()) {
-                    throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "Tried to substract " +
+                    throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "Tried to subtract " +
                             Type.getTypeName(other.getType()) + "('" + other.getStringValue() + "') from " +
                             Type.getTypeName(getType()) + "('" + getStringValue() + "')");
                 }
                 final Duration a = getCanonicalDuration();
                 final Duration b = ((OrderedDurationValue) other).getCanonicalDuration();
                 final Duration result = createSameKind(a.subtract(b)).getCanonicalDuration();
-                return new DayTimeDurationValue(getExpression(), result);
+                final DayTimeDurationValue diff = new DayTimeDurationValue(getExpression(), result);
+                diff.checkDayTimeOverflow(diff.secondsValueSigned());
+                yield diff;
             }
-            case Type.YEAR_MONTH_DURATION: {
+            case Type.YEAR_MONTH_DURATION -> {
                 if (getType() != other.getType()) {
-                    throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "Tried to substract " +
+                    throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "Tried to subtract " +
                             Type.getTypeName(other.getType()) + "('" + other.getStringValue() + "') from " +
                             Type.getTypeName(getType()) + "('" + getStringValue() + "')");
                 }
                 final Duration a = getCanonicalDuration();
                 final Duration b = ((OrderedDurationValue) other).getCanonicalDuration();
                 final Duration result = createSameKind(a.subtract(b)).getCanonicalDuration();
-                return new YearMonthDurationValue(getExpression(), result);
+                final YearMonthDurationValue diff = new YearMonthDurationValue(getExpression(), result);
+                diff.checkYearMonthOverflow(diff.monthsValueSigned());
+                yield diff;
             }
-        /*
-		case Type.TIME:
-		case Type.DATE_TIME:
-		case Type.DATE:
-			AbstractDateTimeValue date = (AbstractDateTimeValue) other;
-			XMLGregorianCalendar gc = (XMLGregorianCalendar) date.calendar.clone();
-			gc.substract(duration);
-			return date.createSameKind(gc);
-		*/
-            default:
-                throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "Cannot substract " +
-                        Type.getTypeName(other.getType()) + "('" + other.getStringValue() + "') from " +
-                        Type.getTypeName(getType()) + "('" + getStringValue() + "')");
-        }
-		/*
-		if(other.getType() == getType()) {
-			return createSameKind(duration.subtract(((OrderedDurationValue)other).duration));
-		}
-		throw new XPathException(getExpression(), "Operand to minus should be of type " + Type.getTypeName(getType()) + "; got: " +
-			Type.getTypeName(other.getType()));
-		*/
+            default -> throw new XPathException(getExpression(), ErrorCodes.XPTY0004, "Cannot subtract " +
+                    Type.getTypeName(other.getType()) + "('" + other.getStringValue() + "') from " +
+                    Type.getTypeName(getType()) + "('" + getStringValue() + "')");
+        };
     }
 
     /**

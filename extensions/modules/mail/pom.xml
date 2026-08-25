@@ -28,7 +28,7 @@
     <parent>
         <groupId>org.exist-db</groupId>
         <artifactId>exist-parent</artifactId>
-        <version>7.0.0-SNAPSHOT</version>
+        <version>${revision}</version>
         <relativePath>../../../exist-parent</relativePath>
     </parent>
 
@@ -46,10 +46,10 @@
   </scm>
 
     <properties>
-        <jakarta.mail-api.version>2.1.3</jakarta.mail-api.version>
-        <eclipse.angus-mail.version>2.0.3</eclipse.angus-mail.version>
-        <jakarta.activation-api.version>2.1.3</jakarta.activation-api.version>
-        <greenmail.version>2.1.3</greenmail.version>
+        <jakarta.mail-api.version>2.1.5</jakarta.mail-api.version>
+        <eclipse.angus-mail.version>2.0.5</eclipse.angus-mail.version>
+        <jakarta.activation-api.version>2.1.4</jakarta.activation-api.version>
+        <greenmail.version>2.1.12</greenmail.version>
     </properties>
 
     <dependencies>
@@ -90,11 +90,6 @@
         </dependency>
 
         <dependency>
-            <groupId>org.apache.commons</groupId>
-            <artifactId>commons-lang3</artifactId>
-        </dependency>
-
-        <dependency>
             <groupId>commons-codec</groupId>
             <artifactId>commons-codec</artifactId>
         </dependency>
@@ -102,11 +97,6 @@
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
-        </dependency>
-
-        <dependency>
-            <groupId>xml-apis</groupId>
-            <artifactId>xml-apis</artifactId>
         </dependency>
 
         <dependency>
@@ -157,10 +147,18 @@
             <testResource>
                 <directory>src/test/resources-filtered</directory>
                 <filtering>true</filtering>
+                <excludes>
+                    <exclude>*.xsl</exclude>
+                </excludes>
+            </testResource>
+            <testResource>
+                <directory>${project.build.directory}/generated-test-resources</directory>
+                <filtering>true</filtering>
             </testResource>
         </testResources>
 
         <plugins>
+
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-dependency-plugin</artifactId>

@@ -34,7 +34,6 @@ import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.text.SimpleDateFormat;
 import java.util.Calendar;
 import java.util.Optional;
@@ -72,7 +71,7 @@ public class DataBackup implements SystemTask {
 
     @Override
     public void configure(final Configuration config, final Properties properties) throws EXistException {
-        dest = Paths.get(properties.getProperty("output-dir", "backup"));
+        dest = Path.of(properties.getProperty("output-dir", "backup"));
         if (!dest.isAbsolute()) {
             dest = ((Path)config.getProperty(BrokerPool.PROPERTY_DATA_DIR)).resolve(dest);
         }
@@ -112,6 +111,7 @@ public class DataBackup implements SystemTask {
             // close the zip file
 		} catch (final IOException e) {
             LOG.error("An IO error occurred while backing up data files: {}", e.getMessage(), e);
+            throw new EXistException("Backup failed: " + e.getMessage(), e);
 		}
 	}
 

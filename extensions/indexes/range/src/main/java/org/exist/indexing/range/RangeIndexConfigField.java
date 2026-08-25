@@ -21,13 +21,16 @@
  */
 package org.exist.indexing.range;
 
+import org.exist.indexing.range.conversion.TypeConverter;
 import org.exist.storage.NodePath;
+import org.exist.util.Configuration;
 import org.exist.util.DatabaseConfigurationException;
 import org.exist.util.XMLString;
 import org.exist.xquery.XPathException;
 import org.exist.xquery.value.Type;
 import org.w3c.dom.Element;
 
+import java.lang.reflect.InvocationTargetException;
 import java.util.Map;
 
 /**
@@ -44,7 +47,7 @@ public class RangeIndexConfigField {
     private NodePath path = null;
     private NodePath relPath = null;
     private int type = Type.STRING;
-    private org.exist.indexing.range.conversion.TypeConverter typeConverter = null;
+    private TypeConverter typeConverter = null;
     protected boolean includeNested = false;
     protected int wsTreatment = XMLString.SUPPRESS_NONE;
     protected boolean caseSensitive = true;
@@ -52,11 +55,11 @@ public class RangeIndexConfigField {
     public RangeIndexConfigField(NodePath parentPath, Element elem, Map<String, String> namespaces) throws DatabaseConfigurationException {
         name = elem.getAttribute("name");
         path = parentPath;
-        if (name == null || name.isEmpty()) {
+        if (name.isEmpty()) {
             throw new DatabaseConfigurationException("Range index module: field element requires a name attribute");
         }
         String match = elem.getAttribute("match");
-        if (match != null && !match.isEmpty()) {
+        if (!match.isEmpty()) {
             try {
                 relPath = new NodePath(namespaces, match);
                 if (relPath.length() == 0)
@@ -70,31 +73,30 @@ public class RangeIndexConfigField {
             path = parentPath;
         }
         String typeStr = elem.getAttribute("type");
-        if (typeStr != null && !typeStr.isEmpty()) {
+        if (!typeStr.isEmpty()) {
             try {
                 this.type = Type.getType(typeStr);
             } catch (XPathException e) {
                 throw new DatabaseConfigurationException("Invalid type declared for range index on " + match + ": " + typeStr);
             }
         }
-        String custom = elem.getAttribute("converter");
-        if (custom != null && !custom.isEmpty()) {
+        final String custom = elem.getAttribute("converter");
+        if (!custom.isEmpty()) {
             try {
-                Class customClass = Class.forName(custom);
-                typeConverter = (org.exist.indexing.range.conversion.TypeConverter) customClass.newInstance();
+                final Class<?> customClass = Class.forName(custom);
+                typeConverter = (TypeConverter) customClass.getDeclaredConstructor().newInstance();
             } catch (ClassNotFoundException e) {
                 RangeIndex.LOG.warn("Class for custom-type not found: {}", custom);
-            } catch (InstantiationException | IllegalAccessException e) {
+            } catch (InstantiationException | IllegalAccessException | NoSuchMethodException | InvocationTargetException e) {
                 RangeIndex.LOG.warn("Failed to initialize custom-type: {}", custom, e);
             }
         }
-        String nested = elem.getAttribute("nested");
-        includeNested = (nested == null || "yes".equalsIgnoreCase(nested));
+        includeNested = Configuration.parseBooleanAttribute(elem, "nested", true);
         path.setIncludeDescendants(includeNested);
 
         // normalize whitespace if whitespace="normalize"
-        String whitespace = elem.getAttribute("whitespace");
-        if (whitespace != null) {
+        final String whitespace = elem.getAttribute("whitespace");
+        if (!whitespace.isEmpty()) {
             if ("trim".equalsIgnoreCase(whitespace)) {
                 wsTreatment = XMLString.SUPPRESS_BOTH;
             } else if ("normalize".equalsIgnoreCase(whitespace)) {
@@ -102,10 +104,7 @@ public class RangeIndexConfigField {
             }
         }
 
-        String caseStr = elem.getAttribute("case");
-        if (caseStr != null && !caseStr.isEmpty()) {
-            caseSensitive = "yes".equalsIgnoreCase(caseStr);
-        }
+        caseSensitive = Configuration.parseBooleanAttribute(elem, "case", true);
     }
 
     public String getName() {
@@ -120,7 +119,7 @@ public class RangeIndexConfigField {
         return type;
     }
 
-    public org.exist.indexing.range.conversion.TypeConverter getTypeConverter() {
+    public TypeConverter getTypeConverter() {
         return typeConverter;
     }
 

@@ -23,10 +23,15 @@ package org.exist.xquery.functions.fn;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.regex.PatternSyntaxException;
 
 import net.sf.saxon.Configuration;
 import net.sf.saxon.functions.Replace;
 import net.sf.saxon.regex.RegularExpression;
+import net.sf.saxon.str.StringView;
+import net.sf.saxon.str.UnicodeString;
 import org.exist.dom.QName;
 import org.exist.xquery.*;
 import org.exist.xquery.value.FunctionParameterSequenceType;
@@ -43,32 +48,49 @@ import static org.exist.xquery.regex.RegexUtil.*;
  */
 public class FunReplace extends BasicFunction {
 
+	/** Reused for empty-match detection — avoids per-call allocation of an empty StringView. */
+	private static final UnicodeString EMPTY_STRING_VIEW = StringView.of("");
+
 	private static final QName FS_REPLACE_NAME = new QName("replace", Function.BUILTIN_FUNCTION_NS);
 
 	private static final String FS_REPLACE_DESCRIPTION =
-        "The function returns the xs:string that is obtained by replacing each non-overlapping substring " +
-        "of $input that matches the given $pattern with an occurrence of the $replacement string.\n\n" + 
-        "The $flags argument is interpreted in the same manner as for the fn:matches() function.\n\n" +
-        "Calling the four argument version with the $flags argument set to a " +
-        "zero-length string gives the same effect as using the three argument version.\n\n" +
-        "If $input is the empty sequence, it is interpreted as the zero-length string.\n\nIf two overlapping " +
-        "substrings of $input both match the $pattern, then only the first one (that is, the one whose first " +
-        "character comes first in the $input string) is replaced.\n\nWithin the $replacement string, a variable " +
-        "$N may be used to refer to the substring captured by the Nth parenthesized sub-expression in the " +
-        "regular expression. For each match of the pattern, these variables are assigned the value of the " +
-        "content matched by the relevant sub-expression, and the modified replacement string is then " +
-        "substituted for the characters in $input that matched the pattern. $0 refers to the substring " +
-        "captured by the regular expression as a whole.\n\nMore specifically, the rules are as follows, " +
-        "where S is the number of parenthesized sub-expressions in the regular expression, and N is the " +
-        "decimal number formed by taking all the digits that consecutively follow the $ character:\n\n" +
-        "1.  If N=0, then the variable is replaced by the substring matched by the regular expression as a whole.\n\n" +
-        "2.  If 1<=N<=S, then the variable is replaced by the substring captured by the Nth parenthesized " +
-        "sub-expression. If the Nth parenthesized sub-expression was not matched, then the variable " +
-        "is replaced by the zero-length string.\n\n" +
-        "3.  If S<N<=9, then the variable is replaced by the zero-length string.\n\n" +
-        "4.  Otherwise (if N>S and N>9), the last digit of N is taken to be a literal character to be " +
-        "included \"as is\" in the replacement string, and the rules are reapplied using the number N " +
-        "formed by stripping off this last digit.";
+        """
+        The function returns the xs:string that is obtained by replacing each non-overlapping substring \
+        of $input that matches the given $pattern with an occurrence of the $replacement string.
+        
+        The $flags argument is interpreted in the same manner as for the fn:matches() function.
+        
+        Calling the four argument version with the $flags argument set to a \
+        zero-length string gives the same effect as using the three argument version.
+        
+        If $input is the empty sequence, it is interpreted as the zero-length string.
+        
+        If two overlapping \
+        substrings of $input both match the $pattern, then only the first one (that is, the one whose first \
+        character comes first in the $input string) is replaced.
+        
+        Within the $replacement string, a variable \
+        $N may be used to refer to the substring captured by the Nth parenthesized sub-expression in the \
+        regular expression. For each match of the pattern, these variables are assigned the value of the \
+        content matched by the relevant sub-expression, and the modified replacement string is then \
+        substituted for the characters in $input that matched the pattern. $0 refers to the substring \
+        captured by the regular expression as a whole.
+        
+        More specifically, the rules are as follows, \
+        where S is the number of parenthesized sub-expressions in the regular expression, and N is the \
+        decimal number formed by taking all the digits that consecutively follow the $ character:
+        
+        1.  If N=0, then the variable is replaced by the substring matched by the regular expression as a whole.
+        
+        2.  If 1<=N<=S, then the variable is replaced by the substring captured by the Nth parenthesized \
+        sub-expression. If the Nth parenthesized sub-expression was not matched, then the variable \
+        is replaced by the zero-length string.
+        
+        3.  If S<N<=9, then the variable is replaced by the zero-length string.
+        
+        4.  Otherwise (if N>S and N>9), the last digit of N is taken to be a literal character to be \
+        included "as is" in the replacement string, and the rules are reapplied using the number N \
+        formed by stripping off this last digit.""";
 
 	private static final FunctionParameterSequenceType FS_TOKENIZE_PARAM_INPUT = optParam("input", Type.STRING, "The input string");
 	private static final FunctionParameterSequenceType FS_TOKENIZE_PARAM_PATTERN = param("pattern", Type.STRING, "The pattern to match");
@@ -111,32 +133,61 @@ public class FunReplace extends BasicFunction {
 				flags = "";
 			}
     		final String string = stringArg.getStringValue();
-    		final String pattern = args[1].itemAt(0).getStringValue();
+    		String pattern = args[1].itemAt(0).getStringValue();
 			final String replace = args[2].itemAt(0).getStringValue();
+
+			final boolean isXQuery40 = context.getXQueryVersion() >= 40;
+
+			// XQ4: translate (*positive_lookahead:...) etc. to Java regex (?=...) syntax
+			if (isXQuery40 && hasXPath4Lookaround(pattern)) {
+				pattern = translateXPath4Lookaround(pattern);
+			}
+
+			// Pre-validate: reject constructs not valid in XPath regex
+			if (!hasLiteral(flags)) {
+				validateXPathRegex(this, pattern, isXQuery40);
+			}
 
 			final Configuration config = context.getBroker().getBrokerPool().getSaxonConfiguration();
 
 			final List<String> warnings = new ArrayList<>(1);
 
 			try {
-				final RegularExpression regularExpression = config.compileRegularExpression(pattern, flags, "XP30", warnings);
-				if (regularExpression.matches("")) {
+				final RegularExpression regularExpression = config.compileRegularExpression(StringView.of(pattern), flags, "XP31", warnings);
+				if (regularExpression.matches(EMPTY_STRING_VIEW)) {
 					throw new XPathException(this, ErrorCodes.FORX0003, "regular expression could match empty string");
 				}
 
 				//TODO(AR) cache the regular expression... might be possible through Saxon config
 
 				if (!hasLiteral(flags)) {
-					final String msg = Replace.checkReplacement(replace);
+					final String msg = Replace.checkReplacement(StringView.of(replace));
 					if (msg != null) {
 						throw new XPathException(this, ErrorCodes.FORX0004, msg);
 					}
 				}
-				final CharSequence res = regularExpression.replace(string, replace);
+				final UnicodeString res = regularExpression.replace(StringView.of(string), StringView.of(replace));
 				result = new StringValue(this, res.toString());
 
 			} catch (final net.sf.saxon.trans.XPathException e) {
-				switch (e.getErrorCodeLocalPart()) {
+				// Saxon's XP31 regex translator rejects some valid patterns.
+				// Fall back to Java regex before giving up.
+				if ("FORX0002".equals(e.getErrorCodeQName().getLocalPart())) {
+					try {
+						final String javaPattern = translateRegexp(
+								this, pattern, flags.contains("x"), flags.contains("i"));
+						final int javaFlags = parseFlags(this, flags);
+						final Pattern compiled = Pattern.compile(javaPattern, javaFlags);
+						final Matcher matcher = compiled.matcher(string);
+						if (compiled.matcher("").matches()) {
+							throw new XPathException(this, ErrorCodes.FORX0003, "regular expression could match empty string");
+						}
+						return new StringValue(this, matcher.replaceAll(replace));
+					} catch (final PatternSyntaxException ignored) {
+						// Java regex fallback also failed — throw original Saxon error below
+					}
+				}
+				switch (e.getErrorCodeQName().getLocalPart()) {
 					case "FORX0001" -> throw new XPathException(this, ErrorCodes.FORX0001, e.getMessage());
 					case "FORX0002" -> throw new XPathException(this, ErrorCodes.FORX0002, e.getMessage());
 					case "FORX0003" -> throw new XPathException(this, ErrorCodes.FORX0003, e.getMessage());

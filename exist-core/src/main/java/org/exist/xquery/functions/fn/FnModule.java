@@ -21,7 +21,6 @@
  */
 package org.exist.xquery.functions.fn;
 
-import java.util.Arrays;
 import java.util.List;
 import java.util.Map;
 
@@ -78,6 +77,7 @@ public class FnModule extends AbstractInternalModule {
         new FunctionDef(FunDocumentURI.FS_DOCUMENT_URI_1, FunDocumentURI.class),
         new FunctionDef(FunElementWithId.FS_ELEMENT_WITH_ID_SIGNATURES[0], FunElementWithId.class),
         new FunctionDef(FunElementWithId.FS_ELEMENT_WITH_ID_SIGNATURES[1], FunElementWithId.class),
+        new FunctionDef(FunElementWithId.FS_ELEMENT_WITH_ID_SIGNATURES[2], FunElementWithId.class),
         new FunctionDef(FunEmpty.signature, FunEmpty.class),
         new FunctionDef(FunEncodeForURI.signature, FunEncodeForURI.class),
         new FunctionDef(FunEndsWith.signatures[0], FunEndsWith.class),
@@ -92,10 +92,13 @@ public class FnModule extends AbstractInternalModule {
         new FunctionDef(FunExists.signature, FunExists.class),
         new FunctionDef(FunFloor.signature, FunFloor.class),
         new FunctionDef(FnFormatDates.FNS_FORMAT_DATETIME_2, FnFormatDates.class),
+        new FunctionDef(FnFormatDates.FNS_FORMAT_DATETIME_3, FnFormatDates.class),
         new FunctionDef(FnFormatDates.FNS_FORMAT_DATETIME_5, FnFormatDates.class),
         new FunctionDef(FnFormatDates.FNS_FORMAT_DATE_2, FnFormatDates.class),
+        new FunctionDef(FnFormatDates.FNS_FORMAT_DATE_3, FnFormatDates.class),
         new FunctionDef(FnFormatDates.FNS_FORMAT_DATE_5, FnFormatDates.class),
         new FunctionDef(FnFormatDates.FNS_FORMAT_TIME_2, FnFormatDates.class),
+        new FunctionDef(FnFormatDates.FNS_FORMAT_TIME_3, FnFormatDates.class),
         new FunctionDef(FnFormatDates.FNS_FORMAT_TIME_5, FnFormatDates.class),
         new FunctionDef(FnFormatIntegers.FS_FORMAT_INTEGER[0], FnFormatIntegers.class),
         new FunctionDef(FnFormatIntegers.FS_FORMAT_INTEGER[1], FnFormatIntegers.class),
@@ -274,17 +277,12 @@ public class FnModule extends AbstractInternalModule {
         new FunctionDef(FunContainsToken.FS_CONTAINS_TOKEN[0], FunContainsToken.class),
         new FunctionDef(FunContainsToken.FS_CONTAINS_TOKEN[1], FunContainsToken.class)
     };
-
-    static {
-        Arrays.sort(functions, new FunctionComparator());
-    }
-
     public final static ErrorCodes.ErrorCode SENR0001 = new ErrorCodes.ErrorCode("SENR0001", "serialization error in fn:serialize");
     public final static ErrorCodes.ErrorCode SEPM0019 = new ErrorCodes.ErrorCode("SEPM0019", "It is an error if an instance of the data model " +
             "used to specify the settings of serialization parameters specifies the value of the same parameter more than once.");
 
     public FnModule(Map<String, List<?>> parameters) {
-        super(functions, parameters, true);
+        super(functions, parameters);
     }
 
     @Override

@@ -53,6 +53,14 @@ public class PathExpr extends AbstractExpression implements CompiledXQuery,
 
     protected boolean inPredicate = false;
 
+    /**
+     * Set to true when this PathExpr represents an actual XPath path
+     * expression with '/' or '//' steps, as opposed to a generic expression
+     * container. When true, duplicate node elimination is applied per
+     * XPath 3.1 §3.3.1.1.
+     */
+    private boolean hasSlash = false;
+
     protected Expression parent;
 
     public PathExpr(final XQueryContext context) {
@@ -96,8 +104,8 @@ public class PathExpr extends AbstractExpression implements CompiledXQuery,
     public void addPredicate(final Predicate predicate) {
         if (!steps.isEmpty()) {
             final Expression e = steps.getLast();
-            if (e instanceof Step) {
-                ((Step) e).addPredicate(predicate);
+            if (e instanceof Step step) {
+                step.addPredicate(predicate);
             }
         }
     }
@@ -216,8 +224,8 @@ public class PathExpr extends AbstractExpression implements CompiledXQuery,
             Sequence currentContext = contextSequence;
             DocumentSet contextDocs = null;
             Expression expr = steps.getFirst();
-            if (expr instanceof VariableReference) {
-                final Variable var = ((VariableReference) expr).getVariable(new AnalyzeContextInfo(parent, 0));
+            if (expr instanceof VariableReference reference) {
+                final Variable var = reference.getVariable(new AnalyzeContextInfo(parent, 0));
                 //TOUNDERSTAND : how null could be possible here ? -pb
                 if (var != null) {
                     contextDocs = var.getContextDocs();
@@ -251,7 +259,38 @@ public class PathExpr extends AbstractExpression implements CompiledXQuery,
                         !currentContext.isPersistentSet();
                 //DESIGN : first test the dependency then the result
                 final int exprDeps = expr.getDependencies();
-                if (inMemProcessing ||
+                // XPath 3.1 §3.3.5 (Path Operator) requires E2 in E1/E2 to be evaluated
+                // for each item in E1's result. The "single eval" else-branch below is a
+                // performance shortcut that only preserves the correct multiplicity when
+                // E2 returns nodes (the subsequent removeDuplicates() call absorbs any
+                // missing iterations). When E2 is a context-INdependent step that
+                // returns atomic values, the shortcut collapses the result — every
+                // iteration of E1 would produce the same atomic value, so the missing
+                // iterations matter. See #798.
+                //
+                // This is narrowly the "atomic literal RHS" case (`//b/3`,
+                // `//x/'name'`, etc.). Context-dependent atomic steps already
+                // declare CONTEXT_ITEM/POSITION/SET and take the existing iterate
+                // branch — or, in the index-optimised Predicate.selectByNodeSet
+                // path, are intentionally evaluated once against the full node-set.
+                // We must not force iteration in those cases.
+                //
+                // Restricted to non-first steps: the first step is the path's
+                // starting point, not a "RHS of /". This also keeps us out of the
+                // function-argument-wrapper case, where a single-step PathExpr
+                // wraps an atomic-returning argument (e.g. the literal pattern
+                // `'^HAM.*'` of matches() inside a predicate) that must NOT be
+                // iterated over the surrounding context.
+                final boolean stepReturnsNonNode = !Type.subTypeOf(expr.returnsType(), Type.NODE);
+                final boolean stepIsContextIndependent =
+                        !Dependency.dependsOn(exprDeps, Dependency.CONTEXT_ITEM)
+                        && !Dependency.dependsOn(exprDeps, Dependency.CONTEXT_POSITION)
+                        && !Dependency.dependsOn(exprDeps, Dependency.CONTEXT_SET);
+                final boolean atomicRhsMustIterate = stepReturnsNonNode
+                        && stepIsContextIndependent
+                        && stepIdx > 0
+                        && currentContext != null && currentContext.hasMany();
+                if (inMemProcessing || atomicRhsMustIterate ||
                         ((Dependency.dependsOn(exprDeps, Dependency.CONTEXT_ITEM) ||
                                 Dependency.dependsOn(exprDeps, Dependency.CONTEXT_POSITION)) &&
                                 //A positional predicate will be evaluated one time
@@ -298,7 +337,8 @@ public class PathExpr extends AbstractExpression implements CompiledXQuery,
                             !Type.subTypeOf(result.getItemType(), Type.NODE)) {
                         gotAtomicResult = true;
                     }
-                    if (steps.size() > 1 && getLastExpression() instanceof Step) {
+                    if (hasSlash && !result.isEmpty()
+                            && Type.subTypeOf(result.getItemType(), Type.NODE)) {
                         // remove duplicate nodes if this is a path
                         // expression with more than one step
                         result.removeDuplicates();
@@ -373,6 +413,14 @@ public class PathExpr extends AbstractExpression implements CompiledXQuery,
 
     public Expression getLastExpression() {
         return steps.isEmpty() ? null : steps.getLast();
+    }
+
+    /**
+     * Marks this PathExpr as containing a '/' or '//' path operator.
+     * Called from the grammar tree walker when SLASH or DSLASH is encountered.
+     */
+    public void setHasSlash() {
+        this.hasSlash = true;
     }
 
     /**
@@ -498,20 +546,34 @@ public class PathExpr extends AbstractExpression implements CompiledXQuery,
         steps.set(steps.size() - 1, s);
     }
 
+    /**
+     * Replace this PathExpr's entire step list with a single expression.
+     * Used by the optimizer when collapsing a multi-step path into a single
+     * compound expression (e.g. distributing a union of steps into a Union
+     * of full paths). Unlike {@link #replace(Expression, Expression)}, which
+     * swaps one step at a time, this method replaces all steps atomically.
+     *
+     * @param newSingleStep the expression that becomes this path's only step
+     */
+    public void replaceAllSteps(final Expression newSingleStep) {
+        steps.clear();
+        steps.add(newSingleStep);
+    }
+
     public String getLiteralValue() {
         if (steps.isEmpty()) {
             return "";
         }
         final Expression next = steps.getFirst();
-        if (next instanceof LiteralValue) {
+        if (next instanceof LiteralValue value) {
             try {
-                return ((LiteralValue) next).getValue().getStringValue();
+                return value.getValue().getStringValue();
             } catch (final XPathException e) {
                 //TODO : is there anything to do here ?
             }
         }
-        if (next instanceof PathExpr) {
-            return ((PathExpr) next).getLiteralValue();
+        if (next instanceof PathExpr expr) {
+            return expr.getLiteralValue();
         }
         return "";
     }
